@@ -1,8 +1,9 @@
+import csv
 import re
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import traceback
 
 try:
@@ -18,7 +19,99 @@ try:
 except ImportError:
     HAS_SELENIUM = False
 
-TITLE = "Selenium Locator Generator - NextGen Pro"
+try:
+    import openpyxl
+    import openpyxl.utils as openpyxl_utils
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
+TITLE = "Locator Generator"
+
+USER_MANUAL_TEXT = """======================================================================
+                LOCATOR GENERATOR  - USER MANUAL
+======================================================================
+
+Welcome to the Locator Generator user manual. This guide 
+covers installation commands, core features, interactive browser tools, 
+and best practices for generating robust and stable test locators.
+
+----------------------------------------------------------------------
+1. GETTING STARTED & INSTALLATION COMMANDS
+----------------------------------------------------------------------
+
+Prerequisites:
+• Python 3.8 or higher installed on your system.
+
+Required Packages Installation:
+Open your Windows Command Prompt (cmd), PowerShell, or terminal and run 
+the following command to install all necessary dependencies:
+
+    pip install beautifulsoup4 selenium openpyxl lxml
+
+Alternatively, if you use Python's explicit runner launcher:
+
+    py -m pip install beautifulsoup4 selenium openpyxl lxml
+
+Verification Command:
+To double-check that everything installed correctly:
+
+    python -c "import bs4, selenium, openpyxl, lxml; print('All dependencies installed successfully!')"
+
+----------------------------------------------------------------------
+2. DASHBOARD INTERFACE OVERVIEW
+----------------------------------------------------------------------
+
+The application features a clean dashboard split into key control sections:
+
+• Live Browser & Noise Filtering Control:
+  - Ignore Patterns: Specify comma-separated keywords or prefixes 
+    (e.g., css-, sc-, ng-star-inserted) to automatically filter out 
+    volatile framework classes.
+  - Target URL: Enter the target web page URL for live testing or whole-page scanning.
+  - Open Picker: Launches an interactive Chrome browser window to visually select elements.
+• HTML Input Fragment: Paste raw HTML markup of a targeted web element here if you aren't using the live browser picker.
+• Action Bar: Buttons to Generate Locators, Scan Whole Page, Load Example, Clear, Copy All Java, and Export to Excel.
+• Candidate Locators & Stability Score Table: Displays generated XPath and CSS locators ranked by stability scores along with match counts and notes.
+
+----------------------------------------------------------------------
+3. CORE FEATURES & WORKFLOWS
+----------------------------------------------------------------------
+
+Workflow A: Using HTML Fragments (Static Analysis)
+1. Click "Load Example" to populate a sample HTML form snippet.
+2. Adjust or paste your own HTML element fragment into the text box.
+3. Click "Generate Locators".
+4. Review the candidate list in the results table, ordered from most stable (test attributes, unique IDs) to least stable (relative DOM paths).
+5. Double-click any row or use the buttons below to copy the locator expression or its Java By statement.
+
+Workflow B: Live Page Scanning
+1. Enter your target URL in the Target URL field (e.g., https://example.com).
+2. Click "Scan Whole Page". 
+3. The app will launch a headless browser instance, parse interactive elements across the page, and populate the table with top locators.
+
+Workflow C: Interactive Browser Picker
+1. Enter a valid URL and click "Open Picker".
+2. A Chrome browser window will open to your page. As you hover over elements, a red visual highlight box will appear around them.
+3. Click on any element in the browser window. Its HTML fragment will be captured automatically, and the application will instantly generate and score its locators.
+4. Use the Browser Tools (Back, Forward, Refresh) or toggle Pick Mode Active on/off if you need to navigate through login flows before picking an element.
+
+----------------------------------------------------------------------
+4. FILTERING UNWANTED NOISE (IGNORE PATTERNS)
+----------------------------------------------------------------------
+
+To keep your test automation scripts clean and maintainable, use the Ignore Patterns text box:
+• Enter unwanted patterns separated by commas (e.g., ng-star-, volatile-, temp-).
+• When generating or scanning, the application performs case-insensitive checks and automatically skips any candidate expressions containing these patterns.
+
+----------------------------------------------------------------------
+5. EXPORTING REPORTS
+----------------------------------------------------------------------
+
+When you have generated your locator suite:
+1. Click "Export to Excel".
+2. Choose your save destination and filename.
+3. The tool generates a clean spreadsheet containing all generated metrics with standard gridlines and theme compatibility."""
 
 def xp_literal(s):
     if "'" not in s: return "'" + s + "'"
@@ -49,6 +142,9 @@ def generate_candidates(soup, el, ignored_patterns=None):
     def add(kind, strategy, expr, score, note):
         key = (kind, expr)
         if not expr or key in seen: return
+        # Check against ignored patterns
+        if any(re.search(pat, expr, re.IGNORECASE) for pat in ignored_patterns):
+            return
         seen.add(key)
         count = None
         if kind == "CSS":
@@ -76,7 +172,7 @@ def generate_candidates(soup, el, ignored_patterns=None):
     ]:
         if attrs.get(key):
             val = attrs[key]
-            if any(re.search(pat, val) for pat in ignored_patterns): continue
+            if any(re.search(pat, val, re.IGNORECASE) for pat in ignored_patterns): continue
             add("CSS", key, f'{tag}[{key}="{val.replace(chr(34), chr(92)+chr(34))}"]', score, note)
             add("XPath", key, f"//{tag}[@{key}={xp_literal(val)}]", score, note)
             if key == "id":
@@ -88,12 +184,12 @@ def generate_candidates(soup, el, ignored_patterns=None):
     safe = []
     for c in classes:
         if not re.match(r"^-?[_a-zA-Z][_a-zA-Z0-9-]*$", c): continue
-        if any(re.search(pat, c) for pat in ignored_patterns): continue
+        if any(re.search(pat, c, re.IGNORECASE) for pat in ignored_patterns): continue
         safe.append(c)
     
     if safe:
         selector = tag + "".join("." + c for c in safe)
-        volatile = any(re.search(r"ng-star-inserted|ng-option-marked|active|selected|css-|sc-", c) for c in safe)
+        volatile = any(re.search(r"ng-star-inserted|ng-option-marked|active|selected|css-|sc-", c, re.IGNORECASE) for c in safe)
         add("CSS", "Tag + all classes", selector, 54 if volatile else 73,
             "Volatile framework classes detected." if volatile else "Class-based selector.")
         for c in safe[:4]:
@@ -102,8 +198,9 @@ def generate_candidates(soup, el, ignored_patterns=None):
 
     if attrs.get("type"):
         val = attrs["type"]
-        add("CSS", "Tag + type", f'{tag}[type="{val}"]', 58, "Tag and type combination.")
-        add("XPath", "Tag + type", f"//{tag}[@type={xp_literal(val)}]", 58, "Tag and type combination.")
+        if not any(re.search(pat, val, re.IGNORECASE) for pat in ignored_patterns):
+            add("CSS", "Tag + type", f'{tag}[type="{val}"]', 58, "Tag and type combination.")
+            add("XPath", "Tag + type", f"//{tag}[@type={xp_literal(val)}]", 58, "Tag and type combination.")
 
     if text:
         compact = re.sub(r"\\s+", " ", text).strip()
@@ -124,6 +221,7 @@ def generate_candidates(soup, el, ignored_patterns=None):
         for p_key in ("id", "data-testid", "data-test", "data-qa", "name", "class"):
             if p_val := p_attrs.get(p_key):
                 p_val_clean = p_val.strip()
+                if any(re.search(pat, p_val_clean, re.IGNORECASE) for pat in ignored_patterns): continue
                 if p_key == "id":
                     add("CSS", "Parent ID + Target Tag", f"#{p_val_clean} > {tag}", 84, "Scoped under parent ID.")
                     add("XPath", "Parent ID + Target Tag", f"//*[@id={xp_literal(p_val_clean)}]//{tag}", 83, "Scoped under parent ID.")
@@ -154,184 +252,136 @@ def generate_candidates(soup, el, ignored_patterns=None):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(TITLE); root.geometry("1480x940"); root.minsize(1100, 750)
+        root.title(TITLE); root.geometry("1300x900"); root.minsize(1000, 720)
         self.rows = []
         self.picker_driver = None
         self.picker_active = False
         self.is_dark_mode = True
         
-        # Next-Gen SaaS Color System (Deep Midnight / Slate Indigo Theme)
         self.themes = {
             "dark": {
-                "bg": "#090D16", "sidebar_bg": "#05080E", "card_bg": "#111827",
-                "text": "#F9FAFB", "subtext": "#9CA3AF", "accent": "#6366F1",
-                "accent_hover": "#4F46E5", "border": "#1F2937", "input_bg": "#030712", 
-                "tree_heading": "#1F2937", "success": "#10B981"
+                "bg": "#1E222B", "card_bg": "#262B36", "text": "#F0F2F5",
+                "subtext": "#9DA5B4", "accent": "#D93838", "border": "#3A4150",
+                "input_bg": "#171A21", "btn_bg": "#313846", "tree_heading": "#313846"
             },
             "light": {
-                "bg": "#F3F4F6", "sidebar_bg": "#E5E7EB", "card_bg": "#FFFFFF",
-                "text": "#111827", "subtext": "#4B5563", "accent": "#4F46E5",
-                "accent_hover": "#4338CA", "border": "#D1D5DB", "input_bg": "#F9FAFB", 
-                "tree_heading": "#E5E7EB", "success": "#059669"
+                "bg": "#F4F6F9", "card_bg": "#FFFFFF", "text": "#2C3E50",
+                "subtext": "#606F7B", "accent": "#C52828", "border": "#CBD5E0",
+                "input_bg": "#FFFFFF", "btn_bg": "#E2E8F0", "tree_heading": "#E2E8F0"
             }
         }
 
-        self.root.configure(bg=self.themes["dark"]["bg"])
-        
-        # Modern Floating Window Split Layout
-        self.sidebar_frame = tk.Frame(root, width=240, bd=0)
-        self.sidebar_frame.pack(side="left", fill="y")
-        self.sidebar_frame.pack_propagate(False)
+        self.main_container = ttk.Frame(root, padding=14)
+        self.main_container.pack(fill="both", expand=True)
 
-        self.content_container = tk.Frame(root, bd=0)
-        self.content_container.pack(side="right", fill="both", expand=True)
-
-        self.build_sidebar()
-        self.build_home_view()
-        self.build_about_view()
-        
-        self.home_view.pack(fill="both", expand=True, padx=20, pady=20)
-        self.about_view.pack_forget()
-        
-        self.apply_theme()
-
-    def build_sidebar(self):
-        logo_area = tk.Frame(self.sidebar_frame, pady=32)
-        logo_area.pack(fill="x")
-        self.logo_lbl = tk.Label(logo_area, text="⚡ LocatorPro", font=("Segoe UI", 16, "bold"))
-        self.logo_lbl.pack(padx=20, anchor="w")
-
-        nav_container = tk.Frame(self.sidebar_frame, pady=10)
-        nav_container.pack(fill="x", padx=12)
-
-        self.btn_home = tk.Button(nav_container, text="   🏠   Dashboard", anchor="w", font=("Segoe UI", 10, "bold"), bd=0, relief="flat", padx=14, pady=12, command=lambda: self.show_view("home"), cursor="hand2")
-        self.btn_home.pack(fill="x", pady=4)
-
-        self.btn_about = tk.Button(nav_container, text="   ℹ️   Documentation", anchor="w", font=("Segoe UI", 10, "bold"), bd=0, relief="flat", padx=14, pady=12, command=lambda: self.show_view("about"), cursor="hand2")
-        self.btn_about.pack(fill="x", pady=4)
-
-        # Bottom info card in sidebar
-        self.sidebar_footer = tk.Frame(self.sidebar_frame, pady=20)
-        self.sidebar_footer.pack(side="bottom", fill="x", padx=16)
-        self.version_lbl = tk.Label(self.sidebar_footer, text="v4.0.0 Stable\nEngine: Selenium + BS4", font=("Segoe UI", 8), justify="left")
-        self.version_lbl.pack(anchor="w")
-
-    def show_view(self, view_name):
-        t = self.themes["dark" if self.is_dark_mode else "light"]
-        if view_name == "home":
-            self.about_view.pack_forget()
-            self.home_view.pack(fill="both", expand=True, padx=20, pady=20)
-            self.btn_home.config(bg=t["accent"], fg="#FFFFFF")
-            self.btn_about.config(bg=t["sidebar_bg"], fg=t["subtext"])
-        else:
-            self.home_view.pack_forget()
-            self.about_view.pack(fill="both", expand=True, padx=20, pady=20)
-            self.btn_about.config(bg=t["accent"], fg="#FFFFFF")
-            self.btn_home.config(bg=t["sidebar_bg"], fg=t["subtext"])
-
-    def build_home_view(self):
-        self.home_view = ttk.Frame(self.content_container)
-        
-        # Header Area
-        header_frame = ttk.Frame(self.home_view)
-        header_frame.pack(fill="x", pady=(0, 16))
+        header_frame = ttk.Frame(self.main_container)
+        header_frame.pack(fill="x", pady=(0, 10))
         
         title_box = ttk.Frame(header_frame)
         title_box.pack(side="left", anchor="w")
-        
-        self.main_title = ttk.Label(title_box, text="Test Automation Control Hub", font=("Segoe UI", 20, "bold"))
-        self.main_title.pack(anchor="w")
-        self.main_sub = ttk.Label(title_box, text="Generate robust, high-scoring locators with instant browser inspection.", font=("Segoe UI", 10))
-        self.main_sub.pack(anchor="w", pady=(3, 0))
+        self.title_label = ttk.Label(title_box, text="🎯Locator Generator", font=("Segoe UI", 16, "bold"))
+        self.title_label.pack(anchor="w")
+        self.sub_label = ttk.Label(title_box, text="Interactive QA automation assistant with live browser picking, smart scoring, and noise filtering.", font=("Segoe UI", 10))
+        self.sub_label.pack(anchor="w", pady=(2, 0))
 
         self.theme_btn = ttk.Button(header_frame, text="☀️ Light Mode", command=self.toggle_theme)
         self.theme_btn.pack(side="right", anchor="e")
 
-        # Control Card Panel
-        top_panel = ttk.LabelFrame(self.home_view, text=" 🌐 Live Environment & Noise Filtering ", padding=16)
-        top_panel.pack(fill="x", pady=(0, 14))
-        
-        grid_frame = ttk.Frame(top_panel)
-        grid_frame.pack(fill="x", pady=(0, 12))
+        self.notebook = ttk.Notebook(self.main_container)
+        self.notebook.pack(fill="both", expand=True)
 
-        ttk.Label(grid_frame, text="Ignore Patterns:").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=8)
-        self.ignore_entry = tk.Entry(grid_frame, width=36, font=("Consolas", 10), relief="solid", bd=1)
-        self.ignore_entry.insert(0, "css-, sc-, ng-star-inserted")
-        self.ignore_entry.grid(row=0, column=1, sticky="w", padx=(0, 24), pady=8)
+        self.home_tab = ttk.Frame(self.notebook, padding=10)
+        self.about_tab = ttk.Frame(self.notebook, padding=10)
 
-        ttk.Label(grid_frame, text="Target URL:").grid(row=0, column=2, sticky="w", padx=(0, 12), pady=8)
-        self.url_entry = tk.Entry(grid_frame, width=42, font=("Consolas", 10), relief="solid", bd=1)
-        self.url_entry.insert(0, "https://example.com")
-        self.url_entry.grid(row=0, column=3, sticky="w", padx=(0, 18), pady=8)
-        
+        self.notebook.add(self.home_tab, text="  🏠 Dashboard  ")
+        self.notebook.add(self.about_tab, text="  ℹ️ About & User Manual  ")
+
+        self.build_home_tab()
+        self.build_about_tab()
+
+        self.apply_theme()
+
+    def build_home_tab(self):
         btn_state = "normal" if HAS_SELENIUM else "disabled"
-        self.test_btn = ttk.Button(grid_frame, text="🧪 Test Locator", command=self.test_live_url, state=btn_state)
-        self.test_btn.grid(row=0, column=4, padx=6, pady=8)
 
-        self.pick_btn = ttk.Button(grid_frame, text="🔍 Open Picker", command=self.pick_element_interactive, state=btn_state, style="Accent.TButton")
-        self.pick_btn.grid(row=0, column=5, padx=6, pady=8)
+        self.top_panel = ttk.LabelFrame(self.home_tab, text=" 🌐 Live Browser & Noise Filtering Control ", padding=10)
+        self.top_panel.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(self.top_panel, text="Ignore Patterns:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
+        self.ignore_entry = tk.Entry(self.top_panel, width=40, font=("Consolas", 10), relief="solid", bd=1)
+        self.ignore_entry.insert(0, "css-, sc-, ng-star-inserted")
+        self.ignore_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
 
-        self.close_browser_btn = ttk.Button(grid_frame, text="❌ Close Browser", command=self.close_picker_browser, state="disabled")
-        self.close_browser_btn.grid(row=0, column=6, padx=6, pady=8)
+        ttk.Label(self.top_panel, text="Target URL:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
+        self.url_entry = tk.Entry(self.top_panel, width=50, font=("Consolas", 10), relief="solid", bd=1)
+        self.url_entry.insert(0, "https://example.com")
+        self.url_entry.grid(row=1, column=1, sticky="w", padx=6, pady=4)
+        
+        self.test_btn = ttk.Button(self.top_panel, text="🧪 Test Locator", command=self.test_live_url, state=btn_state)
+        self.test_btn.grid(row=1, column=2, padx=6, pady=4)
 
-        nav_frame = ttk.Frame(top_panel)
-        nav_frame.pack(fill="x", anchor="w", pady=(6, 0))
+        self.pick_btn = ttk.Button(self.top_panel, text="🔍 Open Picker", command=self.pick_element_interactive, state=btn_state, style="Accent.TButton")
+        self.pick_btn.grid(row=1, column=3, padx=6, pady=4)
+
+        self.close_browser_btn = ttk.Button(self.top_panel, text="❌ Close Browser", command=self.close_picker_browser, state="disabled")
+        self.close_browser_btn.grid(row=1, column=4, padx=6, pady=4)
+
+        nav_frame = ttk.Frame(self.top_panel)
+        nav_frame.grid(row=2, column=0, columnspan=5, sticky="w", padx=6, pady=(8, 4))
         
         self.pick_mode_var = tk.BooleanVar(value=True)
         self.pick_mode_chk = ttk.Checkbutton(nav_frame, text="Pick Mode Active", variable=self.pick_mode_var, command=self.update_pick_mode, state="disabled")
-        self.pick_mode_chk.pack(side="left", padx=(0, 24))
+        self.pick_mode_chk.pack(side="left", padx=(0, 20))
 
-        ttk.Label(nav_frame, text="Browser Tools:").pack(side="left", padx=(0, 10))
+        ttk.Label(nav_frame, text="Browser Tools:").pack(side="left", padx=(0, 6))
         self.nav_back_btn = ttk.Button(nav_frame, text="◀ Back", command=self.browser_back, state="disabled")
-        self.nav_back_btn.pack(side="left", padx=3)
+        self.nav_back_btn.pack(side="left", padx=2)
         
         self.nav_fwd_btn = ttk.Button(nav_frame, text="Forward ▶", command=self.browser_forward, state="disabled")
-        self.nav_fwd_btn.pack(side="left", padx=3)
+        self.nav_fwd_btn.pack(side="left", padx=2)
         
         self.nav_refresh_btn = ttk.Button(nav_frame, text="🔄 Refresh", command=self.browser_refresh, state="disabled")
-        self.nav_refresh_btn.pack(side="left", padx=3)
+        self.nav_refresh_btn.pack(side="left", padx=2)
 
-        # HTML Input Panel
-        html_panel = ttk.LabelFrame(self.home_view, text=" 💻 DOM Element Source Inspector ", padding=16)
-        html_panel.pack(fill="x", pady=(0, 14))
+        if not HAS_SELENIUM:
+            self.warning_lbl = ttk.Label(self.top_panel, text="⚠️ (Install 'selenium' package to enable live features)")
+            self.warning_lbl.grid(row=0, column=2, columnspan=3, padx=6)
+
+        frame = ttk.LabelFrame(self.home_tab, text=" 📝 HTML Input Fragment (or captured live element) ", padding=10)
+        frame.pack(fill="x", pady=(0, 10))
         
-        self.html = tk.Text(html_panel, height=5, wrap="none", font=("Consolas", 10), relief="solid", bd=1, highlightthickness=1)
+        self.html = tk.Text(frame, height=5, wrap="none", font=("Consolas", 10), relief="solid", bd=1, highlightthickness=1)
         self.html.pack(side="left", fill="both", expand=True)
-        sy = ttk.Scrollbar(html_panel, command=self.html.yview); sy.pack(side="right", fill="y"); self.html.configure(yscrollcommand=sy.set)
+        sy = ttk.Scrollbar(frame, command=self.html.yview); sy.pack(side="right", fill="y"); self.html.configure(yscrollcommand=sy.set)
         self.html.insert("1.0", '<div>Paste Your Targeted Element Here</div>')
         
-        # Action Bar
-        bar = ttk.Frame(self.home_view)
-        bar.pack(fill="x", pady=(0, 14))
+        bar = ttk.Frame(self.home_tab)
+        bar.pack(fill="x", pady=(0, 8))
         ttk.Button(bar, text="⚡ Generate Locators", command=self.generate, style="Accent.TButton").pack(side="left")
-        ttk.Button(bar, text="💡 Load Example", command=self.example).pack(side="left", padx=10)
+        ttk.Button(bar, text="🌐 Scan Whole Page", command=self.scan_whole_page, state=btn_state).pack(side="left", padx=6)
+        ttk.Button(bar, text="💡 Load Example", command=self.example).pack(side="left", padx=6)
         ttk.Button(bar, text="🗑 Clear", command=self.clear).pack(side="left")
-        ttk.Button(bar, text="📋 Copy All Java", command=self.copy_all).pack(side="left", padx=(16, 0))
+        ttk.Button(bar, text="📋 Copy All Java", command=self.copy_all).pack(side="left", padx=(14, 0))
+        ttk.Button(bar, text="📊 Export to Excel", command=self.export_excel).pack(side="left", padx=6)
         
-        status_box = ttk.Frame(bar)
-        status_box.pack(side="right")
-        self.status = ttk.Label(status_box, text="System Ready"); self.status.pack(side="left")
+        self.status = ttk.Label(bar, text="Ready"); self.status.pack(side="right")
         
-        # Result Treeview Panel
-        result_panel = ttk.LabelFrame(self.home_view, text=" 🎯 Candidate Locators & Stability Confidence Matrix ", padding=16)
-        result_panel.pack(fill="both", expand=True, pady=(0, 8))
-        
+        result = ttk.LabelFrame(self.home_tab, text=" 🎯 Candidate Locators & Stability Score ", padding=10)
+        result.pack(fill="both", expand=True, pady=(0, 10))
         cols = ("kind", "strategy", "expr", "rank", "count", "note")
-        self.tree = ttk.Treeview(result_panel, columns=cols, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(result, columns=cols, show="headings", selectmode="browse")
         headings = {"kind":"Type", "strategy":"Strategy", "expr":"Locator Expression", "rank":"Stability Score", "count":"Matches", "note":"Notes"}
-        widths = {"kind":80, "strategy":170, "expr":410, "rank":120, "count":95, "note":340}
+        widths = {"kind":68, "strategy":160, "expr":380, "rank":105, "count":95, "note":340}
         for c in cols: self.tree.heading(c, text=headings[c]); self.tree.column(c, width=widths[c], minwidth=55, anchor="w")
-        
-        y = ttk.Scrollbar(result_panel, orient="vertical", command=self.tree.yview)
-        x = ttk.Scrollbar(result_panel, orient="horizontal", command=self.tree.xview)
+        y = ttk.Scrollbar(result, orient="vertical", command=self.tree.yview); x = ttk.Scrollbar(result, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=y.set, xscrollcommand=x.set)
         self.tree.grid(row=0, column=0, sticky="nsew"); y.grid(row=0, column=1, sticky="ns"); x.grid(row=1, column=0, sticky="ew")
-        result_panel.rowconfigure(0, weight=1); result_panel.columnconfigure(0, weight=1)
+        result.rowconfigure(0, weight=1); result.columnconfigure(0, weight=1)
         
         self.tree.bind("<<TreeviewSelect>>", self.preview)
         self.tree.bind("<Double-1>", lambda e: self.copy_expr())
         
-        self.context_menu = tk.Menu(self.home_view, tearoff=0)
+        self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Copy Expression", command=self.copy_expr)
         self.context_menu.add_command(label="Copy Java By Statement", command=self.copy_java)
 
@@ -344,39 +394,33 @@ class App:
         self.tree.bind("<Button-3>", show_context_menu)
         self.tree.bind("<Button-2>", show_context_menu)
 
-        bottom = ttk.Frame(self.home_view)
-        bottom.pack(fill="x", pady=(6, 0))
+        bottom = ttk.Frame(self.home_tab)
+        bottom.pack(fill="x", pady=(0, 4))
         ttk.Button(bottom, text="Copy Selected Expression", command=self.copy_expr).pack(side="left")
-        ttk.Button(bottom, text="Copy Selected Java By", command=self.copy_java).pack(side="left", padx=10)
-        self.preview_var = tk.StringVar(value="Select any candidate row above to inspect its Selenium Java binding statement.")
+        ttk.Button(bottom, text="Copy Selected Java By", command=self.copy_java).pack(side="left", padx=6)
+        self.preview_var = tk.StringVar(value="Select a row to preview Selenium Java code.")
         self.preview_lbl = ttk.Label(bottom, textvariable=self.preview_var)
-        self.preview_lbl.pack(side="left", padx=14)
+        self.preview_lbl.pack(side="left", padx=10)
 
-    def build_about_view(self):
-        self.about_view = ttk.Frame(self.content_container)
+    def build_about_tab(self):
+        header_frame = ttk.Frame(self.about_tab)
+        header_frame.pack(fill="x", pady=(0, 10))
         
-        ttk.Label(self.about_view, text="LocatorPro Documentation & Architecture", font=("Segoe UI", 22, "bold")).pack(anchor="w", pady=(0, 12))
-        ttk.Label(self.about_view, text="Next-Generation Enterprise QA Automation Toolset", font=("Segoe UI", 11, "italic")).pack(anchor="w", pady=(0, 24))
+        ttk.Label(header_frame, text="📘 Project Overview & User Manual", font=("Segoe UI", 16, "bold")).pack(side="left", anchor="w")
+        ttk.Button(header_frame, text="📋 Copy Manual to Clipboard", command=lambda: self.copy(USER_MANUAL_TEXT)).pack(side="right", anchor="e")
 
-        desc = (
-            "Selenium Locator Generator Pro is engineered to solve modern web testing bottlenecks. "
-            "By inspecting DOM trees in real-time or via live browser integration, it evaluates unique testing attributes "
-            "(such as data-testid, data-qa, and stable IDs) to produce resilient locators that resist frequent UI refactoring.\n\n"
-            "Key Technical Capabilities:\n"
-            "• Heuristic Stability Scoring: Ranks candidates dynamically based on uniqueness and maintenance footprint.\n"
-            "• Live Chrome Inspector: Highlights hovered elements with automated boundary bounding boxes.\n"
-            "• Smart Noise Filter: Automatically discards volatile CSS framework hashes (Angular, React, Tailwind).\n"
-            "• Enterprise Ready: Instant Java Selenium By-statement compilation."
-        )
-        
-        about_box = ttk.LabelFrame(self.about_view, text=" System Architecture ", padding=24)
-        about_box.pack(fill="x", pady=(0, 24))
-        
-        lbl = ttk.Label(about_box, text=desc, font=("Segoe UI", 11), wraplength=950, justify="left")
-        lbl.pack(anchor="w")
+        manual_frame = ttk.LabelFrame(self.about_tab, text=" User Guide & Installation Documentation ", padding=10)
+        manual_frame.pack(fill="both", expand=True)
 
-        tech_stack = "Tech Stack: Python 3.8+ · Tkinter Modern UI Engine · BeautifulSoup4 · Selenium WebDriver · lxml Parser"
-        ttk.Label(self.about_view, text=tech_stack, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=10)
+        self.manual_text = tk.Text(manual_frame, wrap="word", font=("Consolas", 10), relief="solid", bd=1, highlightthickness=1)
+        self.manual_text.pack(side="left", fill="both", expand=True)
+        
+        sy = ttk.Scrollbar(manual_frame, command=self.manual_text.yview)
+        sy.pack(side="right", fill="y")
+        self.manual_text.configure(yscrollcommand=sy.set)
+        
+        self.manual_text.insert("1.0", USER_MANUAL_TEXT)
+        self.manual_text.config(state="disabled")
 
     def toggle_theme(self):
         self.is_dark_mode = not self.is_dark_mode
@@ -384,47 +428,44 @@ class App:
 
     def apply_theme(self):
         t = self.themes["dark" if self.is_dark_mode else "light"]
-        
         self.root.configure(bg=t["bg"])
-        self.sidebar_frame.configure(bg=t["sidebar_bg"])
-        self.content_container.configure(bg=t["bg"])
         
         style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
+        try: style.theme_use("clam")
+        except Exception: pass
 
         style.configure(".", background=t["bg"], foreground=t["text"], font=("Segoe UI", 10))
         style.configure("TLabel", background=t["bg"], foreground=t["text"])
+        style.configure("Header.TLabel", font=("Segoe UI", 16, "bold"), foreground=t["accent"], background=t["bg"])
+        style.configure("SubHeader.TLabel", font=("Segoe UI", 10), foreground=t["subtext"], background=t["bg"])
         style.configure("TLabelframe", background=t["bg"], foreground=t["accent"], bordercolor=t["border"], borderwidth=2, relief="solid")
         style.configure("TLabelframe.Label", background=t["bg"], foreground=t["accent"], font=("Segoe UI", 10, "bold"))
-        style.configure("TButton", font=("Segoe UI", 10, "bold"), padding=7, background=t["card_bg"], foreground=t["text"], relief="flat")
+        style.configure("TButton", font=("Segoe UI", 10, "bold"), padding=6, background=t["btn_bg"], foreground=t["text"], relief="flat")
         style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), background=t["accent"], foreground="#FFFFFF", relief="flat")
-        style.configure("Treeview", background=t["card_bg"], foreground=t["text"], fieldbackground=t["card_bg"], rowheight=30, bordercolor=t["border"], borderwidth=1)
+        
+        style.configure("TNotebook", background=t["bg"], borderwidth=0)
+        style.configure("TNotebook.Tab", background=t["btn_bg"], foreground=t["text"], padding=[12, 6], font=("Segoe UI", 10, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", t["card_bg"])], foreground=[("selected", t["accent"])])
+
+        style.configure("Treeview", background=t["card_bg"], foreground=t["text"], fieldbackground=t["card_bg"], rowheight=28, bordercolor=t["border"], borderwidth=1)
         style.configure("Treeview.Heading", background=t["tree_heading"], foreground=t["text"], font=("Segoe UI", 10, "bold"), relief="flat")
         style.map("Treeview", background=[("selected", t["accent"])], foreground=[("selected", "#FFFFFF")])
 
-        is_home_active = str(self.home_view.winfo_manager()) != ''
-        self.btn_home.config(bg=t["accent"] if is_home_active else t["sidebar_bg"], fg="#FFFFFF" if is_home_active else t["subtext"])
-        self.btn_about.config(bg=t["sidebar_bg"] if is_home_active else t["accent"], fg=t["subtext"] if is_home_active else "#FFFFFF")
+        self.ignore_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
+        self.url_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
+        self.html.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
         
-        self.logo_lbl.config(bg=t["sidebar_bg"], fg=t["text"])
-        self.version_lbl.config(bg=t["sidebar_bg"], fg=t["subtext"])
-        self.sidebar_footer.config(bg=t["sidebar_bg"])
+        self.manual_text.config(state="normal")
+        self.manual_text.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
+        self.manual_text.config(state="disabled")
 
-        self.ignore_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"])
-        self.url_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"])
-        self.html.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"])
         self.context_menu.config(bg=t["card_bg"], fg=t["text"], activebackground=t["accent"], activeforeground="#FFFFFF")
 
-        if self.is_dark_mode:
-            self.theme_btn.config(text="☀️ Light Mode")
-        else:
-            self.theme_btn.config(text="🌙 Dark Mode")
+        if self.is_dark_mode: self.theme_btn.config(text="☀️ Light Mode")
+        else: self.theme_btn.config(text="🌙 Dark Mode")
 
-        self.main_title.configure(foreground=t["text"])
-        self.main_sub.configure(foreground=t["subtext"])
+        self.title_label.configure(style="Header.TLabel")
+        self.sub_label.configure(style="SubHeader.TLabel")
         self.preview_lbl.configure(foreground=t["subtext"])
 
     def example(self):
@@ -434,7 +475,7 @@ class App:
     def clear(self):
         self.html.delete("1.0", "end")
         for i in self.tree.get_children(): self.tree.delete(i)
-        self.rows = []; self.status.config(text="Cleared"); self.preview_var.set("Select any candidate row above to inspect its Selenium Java binding statement.")
+        self.rows = []; self.status.config(text="Cleared"); self.preview_var.set("Select a row to preview Selenium Java code.")
 
     def get_ignored_patterns(self):
         raw = self.ignore_entry.get().strip()
@@ -463,6 +504,130 @@ class App:
                 self.tree.insert("", "end", iid=str(i), values=(c["kind"], c["strategy"], c["expr"], f'{c["rank"]} ({c["score"]}/100)', count, c["note"]))
             self.status.config(text=f"Target: <{target.name}> · {len(self.rows)} candidates generated")
         except Exception as ex: messagebox.showerror("Could not parse HTML", str(ex))
+
+    def scan_whole_page(self):
+        if BeautifulSoup is None:
+            messagebox.showerror("Dependency missing", "Install BeautifulSoup with: py -m pip install beautifulsoup4")
+            return
+        url = self.url_entry.get().strip()
+        if not url:
+            messagebox.showwarning("Missing URL", "Please enter a valid URL to scan.")
+            return
+        if not HAS_SELENIUM:
+            messagebox.showerror("Selenium Missing", "Selenium is required to scan live pages.")
+            return
+
+        self.status.config(text="Scanning whole page elements via Selenium...")
+        self.root.update_idletasks()
+
+        def background_scan():
+            driver = None
+            try:
+                options = ChromeOptions()
+                options.add_argument("--headless")
+                driver = webdriver.Chrome(options=options)
+                driver.get(url)
+                html_content = driver.page_source
+                driver.quit()
+                driver = None
+
+                soup = BeautifulSoup(html_content, "html.parser")
+                ignored = self.get_ignored_patterns()
+                
+                elements = soup.find_all(['input', 'button', 'a', 'select', 'textarea', 'form'])
+                other_elements = soup.find_all(lambda tag: tag.has_attr('id') or tag.has_attr('data-testid') or tag.has_attr('data-qa'))
+                
+                all_els = list(dict.fromkeys(elements + other_elements))
+                
+                all_candidates = []
+                for el in all_els[:150]:
+                    cands = generate_candidates(soup, el, ignored_patterns=ignored)
+                    if cands:
+                        top_cand = cands[0]
+                        top_cand['note'] = f"<{el.name}> | " + top_cand['note']
+                        all_candidates.append(top_cand)
+
+                self.root.after(0, lambda: self.populate_scan_results(all_candidates, url))
+            except Exception as ex:
+                err_msg = str(ex)
+                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Scan Error", msg))
+                self.root.after(0, lambda: self.status.config(text="Page scan failed."))
+            finally:
+                if driver:
+                    try: driver.quit()
+                    except: pass
+
+        threading.Thread(target=background_scan, daemon=True).start()
+
+    def populate_scan_results(self, candidates, url):
+        self.rows = candidates
+        for i in self.tree.get_children(): 
+            self.tree.delete(i)
+        for i, c in enumerate(self.rows):
+            count = str(c["count"]) if c["count"] is not None else "N/A"
+            self.tree.insert("", "end", iid=str(i), values=(c["kind"], c["strategy"], c["expr"], f'{c["rank"]} ({c["score"]}/100)', count, c["note"]))
+        self.status.config(text=f"Scanned {url}: Generated {len(self.rows)} top locators across the page.")
+
+    def export_excel(self):
+        if not self.rows:
+            messagebox.showwarning("No Data", "No generated locators available to export.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx"), ("CSV File", "*.csv"), ("All Files", "*.*")],
+            title="Export Generated Locators"
+        )
+        if not file_path:
+            return
+
+        try:
+            headers = ["#", "Type", "Strategy", "Locator Expression", "Stability Rank", "Score Value", "Matches", "Java By Binding", "Notes"]
+            data_rows = []
+            for idx, c in enumerate(self.rows, 1):
+                data_rows.append([
+                    idx,
+                    c["kind"],
+                    c["strategy"],
+                    c["expr"],
+                    c["rank"],
+                    c["score"],
+                    c["count"] if c["count"] is not None else "N/A",
+                    self.java(c),
+                    c["note"]
+                ])
+
+            if file_path.endswith(".xlsx") and HAS_OPENPYXL:
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = "Locators"
+                
+                ws.views.sheetView[0].showGridLines = True
+
+                ws.append(headers)
+                for row_data in data_rows:
+                    ws.append(row_data)
+
+                for col in ws.columns:
+                    max_len = max(len(str(cell.value or '')) for cell in col)
+                    col_letter = openpyxl_utils.get_column_letter(col[0].column)
+                    ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+                wb.save(file_path)
+            else:
+                if file_path.endswith(".xlsx") and not HAS_OPENPYXL:
+                    file_path = file_path.rsplit('.', 1)[0] + '.csv'
+                    messagebox.showinfo("Export Notice", "openpyxl is not installed. Saving file as clean CSV instead.")
+
+                with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(headers)
+                    writer.writerows(data_rows)
+
+            self.status.config(text=f"Exported {len(self.rows)} locators successfully!")
+            messagebox.showinfo("Export Successful", f"Locators exported successfully to:\n{file_path}")
+        except Exception as ex:
+            messagebox.showerror("Export Failed", f"Could not export file:\n{str(ex)}")
 
     def pick_element_interactive(self):
         url = self.url_entry.get().strip()
@@ -502,8 +667,8 @@ class App:
                 let overlay = document.createElement('div');
                 overlay.style.position = 'fixed';
                 overlay.style.zIndex = '999999';
-                overlay.style.border = '2px solid #6366F1';
-                overlay.style.background = 'rgba(99, 102, 241, 0.15)';
+                overlay.style.border = '2px solid #D93838';
+                overlay.style.background = 'rgba(217, 56, 56, 0.15)';
                 overlay.style.pointerEvents = 'none';
                 overlay.style.transition = 'all 0.05s ease';
                 document.body.appendChild(overlay);
@@ -541,8 +706,8 @@ class App:
                                 let overlay = document.createElement('div');
                                 overlay.style.position = 'fixed';
                                 overlay.style.zIndex = '999999';
-                                overlay.style.border = '2px solid #6366F1';
-                                overlay.style.background = 'rgba(99, 102, 241, 0.15)';
+                                overlay.style.border = '2px solid #D93838';
+                                overlay.style.background = 'rgba(217, 56, 56, 0.15)';
                                 overlay.style.pointerEvents = 'none';
                                 document.body.appendChild(overlay);
                                 document.addEventListener('mouseover', function(e) {
@@ -623,10 +788,8 @@ class App:
     def close_picker_browser(self):
         self.picker_active = False
         if self.picker_driver:
-            try:
-                self.picker_driver.quit()
-            except Exception:
-                pass
+            try: self.picker_driver.quit()
+            except Exception: pass
             self.picker_driver = None
         self.close_browser_btn.config(state="disabled")
         self.pick_mode_chk.config(state="disabled")
@@ -689,7 +852,7 @@ class App:
 
     def preview(self, _=None):
         c = self.selected()
-        if c: self.preview_var.set("Java Binding: " + self.java(c))
+        if c: self.preview_var.set("Java: " + self.java(c))
 
     def copy(self, text):
         self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
