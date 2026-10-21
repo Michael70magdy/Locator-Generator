@@ -26,92 +26,40 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
-TITLE = "Locator Generator"
+TITLE = "Locator Generator Pro - Enterprise"
 
 USER_MANUAL_TEXT = """======================================================================
-                LOCATOR GENERATOR  - USER MANUAL
+              LOCATOR GENERATOR PRO - USER MANUAL
 ======================================================================
 
-Welcome to the Locator Generator user manual. This guide 
-covers installation commands, core features, interactive browser tools, 
-and best practices for generating robust and stable test locators.
+Welcome to the Locator Generator Pro user manual. This guide 
+covers multi-selection workflows, Page Object Model (POM) generation, 
+and smart auto-healing regression audits.
 
 ----------------------------------------------------------------------
 1. GETTING STARTED & INSTALLATION COMMANDS
 ----------------------------------------------------------------------
-
-Prerequisites:
-• Python 3.8 or higher installed on your system.
-
-Required Packages Installation:
-Open your Windows Command Prompt (cmd), PowerShell, or terminal and run 
-the following command to install all necessary dependencies:
-
+Prerequisites: Python 3.8+
+Required Packages:
     pip install beautifulsoup4 selenium openpyxl lxml
 
-Alternatively, if you use Python's explicit runner launcher:
-
-    py -m pip install beautifulsoup4 selenium openpyxl lxml
-
-Verification Command:
-To double-check that everything installed correctly:
-
-    python -c "import bs4, selenium, openpyxl, lxml; print('All dependencies installed successfully!')"
+----------------------------------------------------------------------
+2. PAGE OBJECT MODEL (POM) CLASS GENERATOR
+----------------------------------------------------------------------
+Navigate to the "🏗️ POM Export" tab:
+• Select multiple rows on the Dashboard using Ctrl+Click or Shift+Click 
+  and click "➕ Add Selected to POM".
+• Variables are automatically given descriptive names while duplicates 
+  are prevented.
 
 ----------------------------------------------------------------------
-2. DASHBOARD INTERFACE OVERVIEW
+3. SMART AUTO-HEALING HEALTH AUDITOR
 ----------------------------------------------------------------------
-
-The application features a clean dashboard split into key control sections:
-
-• Live Browser & Noise Filtering Control:
-  - Ignore Patterns: Specify comma-separated keywords or prefixes 
-    (e.g., css-, sc-, ng-star-inserted) to automatically filter out 
-    volatile framework classes.
-  - Target URL: Enter the target web page URL for live testing or whole-page scanning.
-  - Open Picker: Launches an interactive Chrome browser window to visually select elements.
-• HTML Input Fragment: Paste raw HTML markup of a targeted web element here if you aren't using the live browser picker.
-• Action Bar: Buttons to Generate Locators, Scan Whole Page, Load Example, Clear, Copy All Java, and Export to Excel.
-• Candidate Locators & Stability Score Table: Displays generated XPath and CSS locators ranked by stability scores along with match counts and notes.
-
-----------------------------------------------------------------------
-3. CORE FEATURES & WORKFLOWS
-----------------------------------------------------------------------
-
-Workflow A: Using HTML Fragments (Static Analysis)
-1. Click "Load Example" to populate a sample HTML form snippet.
-2. Adjust or paste your own HTML element fragment into the text box.
-3. Click "Generate Locators".
-4. Review the candidate list in the results table, ordered from most stable (test attributes, unique IDs) to least stable (relative DOM paths).
-5. Double-click any row or use the buttons below to copy the locator expression or its Java By statement.
-
-Workflow B: Live Page Scanning
-1. Enter your target URL in the Target URL field (e.g., https://example.com).
-2. Click "Scan Whole Page". 
-3. The app will launch a headless browser instance, parse interactive elements across the page, and populate the table with top locators.
-
-Workflow C: Interactive Browser Picker
-1. Enter a valid URL and click "Open Picker".
-2. A Chrome browser window will open to your page. As you hover over elements, a red visual highlight box will appear around them.
-3. Click on any element in the browser window. Its HTML fragment will be captured automatically, and the application will instantly generate and score its locators.
-4. Use the Browser Tools (Back, Forward, Refresh) or toggle Pick Mode Active on/off if you need to navigate through login flows before picking an element.
-
-----------------------------------------------------------------------
-4. FILTERING UNWANTED NOISE (IGNORE PATTERNS)
-----------------------------------------------------------------------
-
-To keep your test automation scripts clean and maintainable, use the Ignore Patterns text box:
-• Enter unwanted patterns separated by commas (e.g., ng-star-, volatile-, temp-).
-• When generating or scanning, the application performs case-insensitive checks and automatically skips any candidate expressions containing these patterns.
-
-----------------------------------------------------------------------
-5. EXPORTING REPORTS
-----------------------------------------------------------------------
-
-When you have generated your locator suite:
-1. Click "Export to Excel".
-2. Choose your save destination and filename.
-3. The tool generates a clean spreadsheet containing all generated metrics with standard gridlines and theme compatibility."""
+Navigate to the "🔍 Health Auditor" tab:
+• Send multiple selected locators straight from the Dashboard using 
+  "🔍 Send Selected to Health Auditor".
+• Run batch regression checks and view AI auto-healing recommendations.
+"""
 
 def xp_literal(s):
     if "'" not in s: return "'" + s + "'"
@@ -142,7 +90,6 @@ def generate_candidates(soup, el, ignored_patterns=None):
     def add(kind, strategy, expr, score, note):
         key = (kind, expr)
         if not expr or key in seen: return
-        # Check against ignored patterns
         if any(re.search(pat, expr, re.IGNORECASE) for pat in ignored_patterns):
             return
         seen.add(key)
@@ -252,8 +199,9 @@ def generate_candidates(soup, el, ignored_patterns=None):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(TITLE); root.geometry("1300x900"); root.minsize(1000, 720)
+        root.title(TITLE); root.geometry("1400x950"); root.minsize(1000, 720)
         self.rows = []
+        self.pom_elements = []
         self.picker_driver = None
         self.picker_active = False
         self.is_dark_mode = True
@@ -279,9 +227,9 @@ class App:
         
         title_box = ttk.Frame(header_frame)
         title_box.pack(side="left", anchor="w")
-        self.title_label = ttk.Label(title_box, text="🎯Locator Generator", font=("Segoe UI", 16, "bold"))
+        self.title_label = ttk.Label(title_box, text="🎯 Locator Generator Pro - Enterprise", font=("Segoe UI", 16, "bold"))
         self.title_label.pack(anchor="w")
-        self.sub_label = ttk.Label(title_box, text="Interactive QA automation assistant with live browser picking, smart scoring, and noise filtering.", font=("Segoe UI", 10))
+        self.sub_label = ttk.Label(title_box, text="Multi-selection batch workflow, Page Object Model classes, and smart auto-healing regression audit.", font=("Segoe UI", 10))
         self.sub_label.pack(anchor="w", pady=(2, 0))
 
         self.theme_btn = ttk.Button(header_frame, text="☀️ Light Mode", command=self.toggle_theme)
@@ -291,12 +239,18 @@ class App:
         self.notebook.pack(fill="both", expand=True)
 
         self.home_tab = ttk.Frame(self.notebook, padding=10)
+        self.pom_tab = ttk.Frame(self.notebook, padding=10)
+        self.audit_tab = ttk.Frame(self.notebook, padding=10)
         self.about_tab = ttk.Frame(self.notebook, padding=10)
 
         self.notebook.add(self.home_tab, text="  🏠 Dashboard  ")
+        self.notebook.add(self.pom_tab, text="  🏗️ POM Export  ")
+        self.notebook.add(self.audit_tab, text="  🔍 Health Auditor & Auto-Heal  ")
         self.notebook.add(self.about_tab, text="  ℹ️ About & User Manual  ")
 
         self.build_home_tab()
+        self.build_pom_tab()
+        self.build_audit_tab()
         self.build_about_tab()
 
         self.apply_theme()
@@ -308,15 +262,21 @@ class App:
         self.top_panel.pack(fill="x", pady=(0, 10))
         
         ttk.Label(self.top_panel, text="Ignore Patterns:").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        self.ignore_entry = tk.Entry(self.top_panel, width=40, font=("Consolas", 10), relief="solid", bd=1)
+        self.ignore_entry = tk.Entry(self.top_panel, width=35, font=("Consolas", 10), relief="solid", bd=1)
         self.ignore_entry.insert(0, "css-, sc-, ng-star-inserted")
         self.ignore_entry.grid(row=0, column=1, sticky="w", padx=6, pady=4)
 
+        ttk.Label(self.top_panel, text="Framework:").grid(row=0, column=2, sticky="e", padx=6, pady=4)
+        self.framework_var = tk.StringVar(value="Java Selenium")
+        self.framework_combo = ttk.Combobox(self.top_panel, textvariable=self.framework_var, values=["Java Selenium", "Python Selenium", "Playwright", "Cypress"], state="readonly", width=16)
+        self.framework_combo.grid(row=0, column=3, columnspan=2, sticky="w", padx=6, pady=4)
+        self.framework_combo.bind("<<ComboboxSelected>>", self.preview)
+
         ttk.Label(self.top_panel, text="Target URL:").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        self.url_entry = tk.Entry(self.top_panel, width=50, font=("Consolas", 10), relief="solid", bd=1)
+        self.url_entry = tk.Entry(self.top_panel, width=45, font=("Consolas", 10), relief="solid", bd=1)
         self.url_entry.insert(0, "https://example.com")
         self.url_entry.grid(row=1, column=1, sticky="w", padx=6, pady=4)
-        
+
         self.test_btn = ttk.Button(self.top_panel, text="🧪 Test Locator", command=self.test_live_url, state=btn_state)
         self.test_btn.grid(row=1, column=2, padx=6, pady=4)
 
@@ -343,17 +303,13 @@ class App:
         self.nav_refresh_btn = ttk.Button(nav_frame, text="🔄 Refresh", command=self.browser_refresh, state="disabled")
         self.nav_refresh_btn.pack(side="left", padx=2)
 
-        if not HAS_SELENIUM:
-            self.warning_lbl = ttk.Label(self.top_panel, text="⚠️ (Install 'selenium' package to enable live features)")
-            self.warning_lbl.grid(row=0, column=2, columnspan=3, padx=6)
-
         frame = ttk.LabelFrame(self.home_tab, text=" 📝 HTML Input Fragment (or captured live element) ", padding=10)
         frame.pack(fill="x", pady=(0, 10))
         
         self.html = tk.Text(frame, height=5, wrap="none", font=("Consolas", 10), relief="solid", bd=1, highlightthickness=1)
         self.html.pack(side="left", fill="both", expand=True)
         sy = ttk.Scrollbar(frame, command=self.html.yview); sy.pack(side="right", fill="y"); self.html.configure(yscrollcommand=sy.set)
-        self.html.insert("1.0", '<div>Paste Your Targeted Element Here</div>')
+        self.html.string = self.html.insert("1.0", '<div>Paste Your Targeted Element Here</div>')
         
         bar = ttk.Frame(self.home_tab)
         bar.pack(fill="x", pady=(0, 8))
@@ -361,15 +317,21 @@ class App:
         ttk.Button(bar, text="🌐 Scan Whole Page", command=self.scan_whole_page, state=btn_state).pack(side="left", padx=6)
         ttk.Button(bar, text="💡 Load Example", command=self.example).pack(side="left", padx=6)
         ttk.Button(bar, text="🗑 Clear", command=self.clear).pack(side="left")
-        ttk.Button(bar, text="📋 Copy All Java", command=self.copy_all).pack(side="left", padx=(14, 0))
-        ttk.Button(bar, text="📊 Export to Excel", command=self.export_excel).pack(side="left", padx=6)
+        
+        # Multi-selection action buttons
+        ttk.Button(bar, text="➕ Add Selected to POM", command=self.add_selected_to_pom).pack(side="left", padx=(14, 0))
+        ttk.Button(bar, text="🔍 Send Selected to Health Auditor", command=self.send_selected_to_auditor).pack(side="left", padx=6)
+        ttk.Button(bar, text="📊 Export", command=self.export_excel).pack(side="left", padx=6)
         
         self.status = ttk.Label(bar, text="Ready"); self.status.pack(side="right")
         
-        result = ttk.LabelFrame(self.home_tab, text=" 🎯 Candidate Locators & Stability Score ", padding=10)
+        result = ttk.LabelFrame(self.home_tab, text=" 🎯 Candidate Locators & Stability Score (Multi-select enabled via Ctrl/Shift) ", padding=10)
         result.pack(fill="both", expand=True, pady=(0, 10))
         cols = ("kind", "strategy", "expr", "rank", "count", "note")
-        self.tree = ttk.Treeview(result, columns=cols, show="headings", selectmode="browse")
+        
+        # Changed selectmode to 'extended' to allow multi-selection!
+        self.tree = ttk.Treeview(result, columns=cols, show="headings", selectmode="extended")
+        
         headings = {"kind":"Type", "strategy":"Strategy", "expr":"Locator Expression", "rank":"Stability Score", "count":"Matches", "note":"Notes"}
         widths = {"kind":68, "strategy":160, "expr":380, "rank":105, "count":95, "note":340}
         for c in cols: self.tree.heading(c, text=headings[c]); self.tree.column(c, width=widths[c], minwidth=55, anchor="w")
@@ -383,12 +345,15 @@ class App:
         
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Copy Expression", command=self.copy_expr)
-        self.context_menu.add_command(label="Copy Java By Statement", command=self.copy_java)
+        self.context_menu.add_command(label="Copy Code Binding", command=self.copy_framework_code)
+        self.context_menu.add_command(label="Add Selected to POM", command=self.add_selected_to_pom)
+        self.context_menu.add_command(label="Send Selected to Auditor", command=self.send_selected_to_auditor)
 
         def show_context_menu(event):
             item = self.tree.identify_row(event.y)
             if item:
-                self.tree.selection_set(item)
+                if item not in self.tree.selection():
+                    self.tree.selection_set(item)
                 self.context_menu.post(event.x_root, event.y_root)
 
         self.tree.bind("<Button-3>", show_context_menu)
@@ -397,10 +362,98 @@ class App:
         bottom = ttk.Frame(self.home_tab)
         bottom.pack(fill="x", pady=(0, 4))
         ttk.Button(bottom, text="Copy Selected Expression", command=self.copy_expr).pack(side="left")
-        ttk.Button(bottom, text="Copy Selected Java By", command=self.copy_java).pack(side="left", padx=6)
-        self.preview_var = tk.StringVar(value="Select a row to preview Selenium Java code.")
+        ttk.Button(bottom, text="Copy Code Binding", command=self.copy_framework_code).pack(side="left", padx=6)
+        self.preview_var = tk.StringVar(value="Select rows to preview automation code.")
         self.preview_lbl = ttk.Label(bottom, textvariable=self.preview_var)
         self.preview_lbl.pack(side="left", padx=10)
+
+    def build_pom_tab(self):
+        ttk.Label(self.pom_tab, text="🏗️ Page Object Model (POM) Class Generator", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(self.pom_tab, text="Group captured locators and export clean, structured enterprise POM class boilerplates.", font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 10))
+
+        top_bar = ttk.Frame(self.pom_tab)
+        top_bar.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(top_bar, text="Page Class Name:").pack(side="left", padx=(0, 6))
+        self.pom_class_entry = tk.Entry(top_bar, width=25, font=("Consolas", 10), relief="solid", bd=1)
+        self.pom_class_entry.insert(0, "LoginPage")
+        self.pom_class_entry.pack(side="left", padx=(0, 15))
+
+        ttk.Button(top_bar, text="🗑 Clear POM List", command=self.clear_pom).pack(side="left", padx=6)
+        ttk.Button(top_bar, text="📋 Copy POM Class Code", command=self.copy_pom_class, style="Accent.TButton").pack(side="right", padx=6)
+
+        pom_pane = ttk.Frame(self.pom_tab)
+        pom_pane.pack(fill="both", expand=True, pady=(0, 10))
+
+        left_frame = ttk.LabelFrame(pom_pane, text=" Added Elements Suite ", padding=8)
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        pom_cols = ("varname", "kind", "expr")
+        self.pom_tree = ttk.Treeview(left_frame, columns=pom_cols, show="headings", selectmode="browse")
+        pom_headings = {"varname": "Descriptive Variable Name", "kind": "Type", "expr": "Expression"}
+        pom_widths = {"varname": 180, "kind": 70, "expr": 245}
+        for c in pom_cols:
+            self.pom_tree.heading(c, text=pom_headings[c])
+            self.pom_tree.column(c, width=pom_widths[c], minwidth=50, anchor="w")
+        
+        py_y = ttk.Scrollbar(left_frame, orient="vertical", command=self.pom_tree.yview)
+        py_x = ttk.Scrollbar(left_frame, orient="horizontal", command=self.pom_tree.xview)
+        self.pom_tree.configure(yscrollcommand=py_y.set, xscrollcommand=py_x.set)
+        self.pom_tree.grid(row=0, column=0, sticky="nsew"); py_y.grid(row=0, column=1, sticky="ns"); py_x.grid(row=1, column=0, sticky="ew")
+        left_frame.rowconfigure(0, weight=1); left_frame.columnconfigure(0, weight=1)
+
+        right_frame = ttk.LabelFrame(pom_pane, text=" Generated Class Code Preview ", padding=8)
+        right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        self.pom_code_text = tk.Text(right_frame, wrap="none", font=("Consolas", 10), relief="solid", bd=1)
+        self.pom_code_text.pack(side="left", fill="both", expand=True)
+        code_sy = ttk.Scrollbar(right_frame, command=self.pom_code_text.yview); code_sy.pack(side="right", fill="y")
+        self.pom_code_text.configure(yscrollcommand=code_sy.set)
+
+    def build_audit_tab(self):
+        ttk.Label(self.audit_tab, text="🔍 Locator Health Auditor & Smart Auto-Healer", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(self.audit_tab, text="Audits existing locators against a live URL. If a locator breaks, the AI auto-healer detects and suggests valid replacements.", font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 10))
+
+        ctrl_frame = ttk.Frame(self.audit_tab)
+        ctrl_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(ctrl_frame, text="Audit Target URL:").pack(side="left", padx=(0, 6))
+        self.audit_url_entry = tk.Entry(ctrl_frame, width=45, font=("Consolas", 10), relief="solid", bd=1)
+        self.audit_url_entry.insert(0, "https://example.com")
+        self.audit_url_entry.pack(side="left", padx=(0, 10))
+
+        audit_btn_state = "normal" if HAS_SELENIUM else "disabled"
+        self.run_audit_btn = ttk.Button(ctrl_frame, text="🚀 Run Audit & Auto-Heal", command=self.run_health_audit_and_heal, state=audit_btn_state, style="Accent.TButton")
+        self.run_audit_btn.pack(side="left", padx=6)
+
+        content_frame = ttk.Frame(self.audit_tab)
+        content_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        left_pane = ttk.LabelFrame(content_frame, text=" Paste or Send Locators to Audit (One per line) ", padding=8)
+        left_pane.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        
+        self.audit_input_text = tk.Text(left_pane, height=15, wrap="none", font=("Consolas", 10), relief="solid", bd=1)
+        self.audit_input_text.pack(side="left", fill="both", expand=True)
+        aud_sy = ttk.Scrollbar(left_pane, command=self.audit_input_text.yview); aud_sy.pack(side="right", fill="y")
+        self.audit_input_text.configure(yscrollcommand=aud_sy.set)
+        self.audit_input_text.insert("1.0", "//h1\n#nonexistent-broken-id\n//a")
+
+        right_pane = ttk.LabelFrame(content_frame, text=" Audit Results & Healing Suggestions ", padding=8)
+        right_pane.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        audit_cols = ("expr", "status", "suggestion")
+        self.audit_tree = ttk.Treeview(right_pane, columns=audit_cols, show="headings", selectmode="browse")
+        audit_headings = {"expr": "Original Locator", "status": "Health Status", "suggestion": "Auto-Healed / Suggested Replacement"}
+        audit_widths = {"expr": 240, "status": 140, "suggestion": 270}
+        for c in audit_cols: 
+            self.audit_tree.heading(c, text=audit_headings[c])
+            self.audit_tree.column(c, width=audit_widths[c], minwidth=50, anchor="w")
+        
+        aud_y = ttk.Scrollbar(right_pane, orient="vertical", command=self.audit_tree.yview)
+        aud_x = ttk.Scrollbar(right_pane, orient="horizontal", command=self.audit_tree.xview)
+        self.audit_tree.configure(yscrollcommand=aud_y.set, xscrollcommand=aud_x.set)
+        self.audit_tree.grid(row=0, column=0, sticky="nsew"); aud_y.grid(row=0, column=1, sticky="ns"); aud_x.grid(row=1, column=0, sticky="ew")
+        right_pane.rowconfigure(0, weight=1); right_pane.columnconfigure(0, weight=1)
 
     def build_about_tab(self):
         header_frame = ttk.Frame(self.about_tab)
@@ -451,12 +504,14 @@ class App:
         style.configure("Treeview.Heading", background=t["tree_heading"], foreground=t["text"], font=("Segoe UI", 10, "bold"), relief="flat")
         style.map("Treeview", background=[("selected", t["accent"])], foreground=[("selected", "#FFFFFF")])
 
-        self.ignore_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
-        self.url_entry.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
-        self.html.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
+        for widget in [self.ignore_entry, self.url_entry, self.html, self.audit_url_entry, self.audit_input_text, self.pom_class_entry, self.pom_code_text]:
+            try:
+                widget.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"])
+            except Exception:
+                pass
         
         self.manual_text.config(state="normal")
-        self.manual_text.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"], highlightbackground=t["border"], highlightcolor=t["accent"])
+        self.manual_text.config(bg=t["input_bg"], fg=t["text"], insertbackground=t["text"])
         self.manual_text.config(state="disabled")
 
         self.context_menu.config(bg=t["card_bg"], fg=t["text"], activebackground=t["accent"], activeforeground="#FFFFFF")
@@ -475,7 +530,7 @@ class App:
     def clear(self):
         self.html.delete("1.0", "end")
         for i in self.tree.get_children(): self.tree.delete(i)
-        self.rows = []; self.status.config(text="Cleared"); self.preview_var.set("Select a row to preview Selenium Java code.")
+        self.rows = []; self.status.config(text="Cleared"); self.preview_var.set("Select rows to preview automation code.")
 
     def get_ignored_patterns(self):
         raw = self.ignore_entry.get().strip()
@@ -568,6 +623,260 @@ class App:
             self.tree.insert("", "end", iid=str(i), values=(c["kind"], c["strategy"], c["expr"], f'{c["rank"]} ({c["score"]}/100)', count, c["note"]))
         self.status.config(text=f"Scanned {url}: Generated {len(self.rows)} top locators across the page.")
 
+    def generate_descriptive_name(self, expr):
+        clean_expr = expr.lower()
+        base_name = "element"
+        if "id=" in clean_expr or "#" in clean_expr:
+            match = re.search(r'(?:id=["\']?|#)([a-zA-Z0-9\-_]+)', clean_expr)
+            if match: base_name = match.group(1)
+        elif "name=" in clean_expr:
+            match = re.search(r'name=["\']?([a-zA-Z0-9\-_]+)', clean_expr)
+            if match: base_name = match.group(1)
+        elif "data-testid" in clean_expr or "data-qa" in clean_expr:
+            match = re.search(r'data-(?:testid|qa)=["\']?([a-zA-Z0-9\-_]+)', clean_expr)
+            if match: base_name = match.group(1)
+        elif "placeholder=" in clean_expr:
+            match = re.search(r'placeholder=["\']?([a-zA-Z0-9\-_ ]+)', clean_expr)
+            if match: base_name = match.group(1)
+        elif "button" in clean_expr:
+            base_name = "button"
+        elif "input" in clean_expr:
+            base_name = "input"
+        elif "a[" in clean_expr or "link" in clean_expr:
+            base_name = "link"
+
+        words = re.findall(r'[a-zA-Z0-9]+', base_name)
+        if not words: return "uiElement"
+        
+        camel_case = words[0].lower() + "".join(w.capitalize() for w in words[1:])
+        if "button" in clean_expr and not camel_case.lower().endswith("button"):
+            camel_case += "Button"
+        elif "input" in clean_expr and not camel_case.lower().endswith("input"):
+            camel_case += "Input"
+        elif "a[" in clean_expr and not camel_case.lower().endswith("link"):
+            camel_case += "Link"
+
+        return camel_case
+
+    def add_selected_to_pom(self):
+        """Adds all currently selected rows to the POM suite, checking for duplicates and naming them uniquely."""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("No Rows Selected", "Please select one or more rows from the table first.")
+            return
+
+        added_count = 0
+        duplicate_count = 0
+
+        for item in selected_items:
+            c = self.rows[int(item)]
+            expr = c["expr"]
+
+            # Check if expression already exists in POM suite
+            exists = any(el["expr"] == expr for el in self.pom_elements)
+            if exists:
+                duplicate_count += 1
+                continue
+
+            var_name = self.generate_descriptive_name(expr)
+            original_var = var_name
+            counter = 1
+            existing_names = {el["varname"] for el in self.pom_elements}
+            while var_name in existing_names:
+                var_name = f"{original_var}{counter}"
+                counter += 1
+
+            self.pom_elements.append({"varname": var_name, "kind": c["kind"], "expr": expr})
+            self.pom_tree.insert("", "end", values=(var_name, c["kind"], expr))
+            added_count += 1
+
+        self.update_pom_code_preview()
+        self.status.config(text=f"Added {added_count} element(s) to POM suite ({duplicate_count} duplicates skipped).")
+        if added_count > 0:
+            messagebox.showinfo("POM Update", f"Successfully added {added_count} element(s) to your POM suite! ({duplicate_count} skipped duplicates).")
+
+    def send_selected_to_auditor(self):
+        """Sends all currently selected rows' locator expressions into the Health Auditor input text box."""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("No Rows Selected", "Please select one or more rows from the table first.")
+            return
+
+        expressions_to_add = []
+        for item in selected_items:
+            c = self.rows[int(item)]
+            expressions_to_add.append(c["expr"])
+
+        current_audit_text = self.audit_input_text.get("1.0", "end").strip()
+        existing_lines = set(current_audit_text.split("\n")) if current_audit_text else set()
+
+        new_added = 0
+        for expr in expressions_to_add:
+            if expr not in existing_lines:
+                self.audit_input_text.insert("end", f"\n{expr}")
+                existing_lines.add(expr)
+                new_added += 1
+
+        # Switch notebook tab to Health Auditor tab automatically
+        self.notebook.select(self.audit_tab)
+        self.status.config(text=f"Sent {new_added} locator(s) to Health Auditor.")
+
+    def clear_pom(self):
+        self.pom_elements = []
+        for i in self.pom_tree.get_children():
+            self.pom_tree.delete(i)
+        self.update_pom_code_preview()
+        self.status.config(text="POM suite cleared.")
+
+    def update_pom_code_preview(self):
+        class_name = self.pom_class_entry.get().strip() or "LoginPage"
+        fw = self.framework_var.get()
+        code_lines = []
+
+        if fw == "Java Selenium":
+            code_lines = [
+                "import org.openqa.selenium.By;",
+                "import org.openqa.selenium.WebDriver;",
+                "import org.openqa.selenium.WebElement;",
+                "import org.openqa.selenium.support.PageFactory;",
+                "",
+                f"public class {class_name} {{",
+                "    private WebDriver driver;",
+                ""
+            ]
+            for el in self.pom_elements:
+                by_stmt = f'By.xpath("{esc(el["expr"])}")' if el["kind"] == "XPath" else f'By.cssSelector("{esc(el["expr"])}")'
+                code_lines.append(f"    private final By {el['varname']} = {by_stmt};")
+            
+            code_lines += [
+                "",
+                f"    public {class_name}(WebDriver driver) {{",
+                "        this.driver = driver;",
+                "    }",
+                "}"
+            ]
+        elif fw == "Python Selenium":
+            code_lines = [
+                "from selenium.webdriver.common.by import By",
+                "",
+                f"class {class_name}:",
+                "    def __init__(self, driver):",
+                "        self.driver = driver",
+                ""
+            ]
+            for el in self.pom_elements:
+                sel_type = "By.XPATH" if el["kind"] == "XPath" else "By.CSS_SELECTOR"
+                code_lines.append(f'    {el["varname"]} = ({sel_type}, "{esc(el["expr"])}")')
+            code_lines.append("")
+        elif fw == "Playwright":
+            code_lines = [
+                f"class {class_name}:",
+                "    def __init__(self, page):",
+                "        self.page = page",
+                ""
+            ]
+            for el in self.pom_elements:
+                expr_val = f'xpath={el["expr"]}' if el["kind"] == "XPath" else el["expr"]
+                code_lines.append(f'        self.{el["varname"]} = page.locator("{esc(expr_val)}")')
+            code_lines.append("")
+        elif fw == "Cypress":
+            code_lines = [
+                f"class {class_name} {{",
+            ]
+            for el in self.pom_elements:
+                cmd = f'cy.xpath("{esc(el["expr"])}")' if el["kind"] == "XPath" else f'cy.get("{esc(el["expr"])}")'
+                code_lines.append(f'    {el["varname"]} = () => {cmd};')
+            code_lines.append("}")
+
+        self.pom_code_text.delete("1.0", "end")
+        self.pom_code_text.insert("1.0", "\n".join(code_lines))
+
+    def copy_pom_class(self):
+        code = self.pom_code_text.get("1.0", "end").strip()
+        if not code:
+            messagebox.showwarning("Empty POM", "Add elements to the POM suite first.")
+            return
+        self.copy(code)
+        messagebox.showinfo("POM Copied", "POM Class code copied to clipboard successfully!")
+
+    def run_health_audit_and_heal(self):
+        url = self.audit_url_entry.get().strip()
+        raw_locators = self.audit_input_text.get("1.0", "end").strip()
+        
+        if not url or not raw_locators:
+            messagebox.showwarning("Missing Data", "Please enter both a Target URL and locators to audit.")
+            return
+        if not HAS_SELENIUM:
+            messagebox.showerror("Selenium Missing", "Selenium is required for live audits.")
+            return
+
+        locators = [line.strip() for line in raw_locators.split("\n") if line.strip()]
+        for i in self.audit_tree.get_children():
+            self.audit_tree.delete(i)
+
+        self.status.config(text="Auditing and auto-healing locators...")
+        self.root.update_idletasks()
+
+        def audit_and_heal_task():
+            driver = None
+            try:
+                options = ChromeOptions()
+                options.add_argument("--headless")
+                driver = webdriver.Chrome(options=options)
+                driver.get(url)
+                page_source = driver.page_source
+                soup = BeautifulSoup(page_source, "html.parser") if BeautifulSoup else None
+
+                results = []
+                for expr in locators:
+                    matches = 0
+                    try:
+                        if expr.startswith("//") or expr.startswith("("):
+                            matches = len(driver.find_elements(SelBy.XPATH, expr))
+                        else:
+                            matches = len(driver.find_elements(SelBy.CSS_SELECTOR, expr))
+                    except Exception:
+                        matches = 0
+
+                    if matches > 0:
+                        status = "✅ Healthy"
+                        suggestion = "N/A (Working)"
+                    else:
+                        status = "❌ Broken / 0 Matches"
+                        suggestion = "No fallback found"
+                        if soup:
+                            if "#" in expr:
+                                clean_id = expr.split("#")[-1].split()[0]
+                                alt_el = soup.find(id=re.compile(clean_id, re.IGNORECASE))
+                                if alt_el and alt_el.get('id'):
+                                    suggestion = f"//*[@id='{alt_el.get('id')}']"
+                            elif "//" in expr:
+                                tag_match = re.search(r"//([a-zA-Z0-9]+)", expr)
+                                if tag_match:
+                                    tag = tag_match.group(1)
+                                    alt_el = soup.find(tag)
+                                    if alt_el and alt_el.get('class'):
+                                        suggestion = f"//{tag}[contains(@class, '{alt_el.get('class')[0]}')]"
+                                    elif alt_el:
+                                        suggestion = f"//{tag}"
+
+                    results.append((expr, status, suggestion))
+
+                self.root.after(0, lambda res=results: self.populate_audit_results(res))
+            except Exception as ex:
+                self.root.after(0, lambda msg=str(ex): messagebox.showerror("Audit Error", msg))
+            finally:
+                if driver:
+                    try: driver.quit()
+                    except: pass
+
+        threading.Thread(target=audit_and_heal_task, daemon=True).start()
+
+    def populate_audit_results(self, results):
+        for expr, status, suggestion in results:
+            self.audit_tree.insert("", "end", values=(expr, status, suggestion))
+        self.status.config(text="Health audit & auto-healing complete.")
+
     def export_excel(self):
         if not self.rows:
             messagebox.showwarning("No Data", "No generated locators available to export.")
@@ -581,64 +890,49 @@ class App:
         if not file_path:
             return
 
+        fw = self.framework_var.get()
         try:
-            headers = ["#", "Type", "Strategy", "Locator Expression", "Stability Rank", "Score Value", "Matches", "Java By Binding", "Notes"]
+            headers = ["#", "Type", "Strategy", "Locator Expression", "Stability Rank", "Score Value", "Matches", f"Code Binding ({fw})", "Notes"]
             data_rows = []
             for idx, c in enumerate(self.rows, 1):
                 data_rows.append([
-                    idx,
-                    c["kind"],
-                    c["strategy"],
-                    c["expr"],
-                    c["rank"],
-                    c["score"],
+                    idx, c["kind"], c["strategy"], c["expr"], c["rank"], c["score"],
                     c["count"] if c["count"] is not None else "N/A",
-                    self.java(c),
-                    c["note"]
+                    self.format_framework_code(c, fw), c["note"]
                 ])
 
             if file_path.endswith(".xlsx") and HAS_OPENPYXL:
                 wb = openpyxl.Workbook()
                 ws = wb.active
                 ws.title = "Locators"
-                
                 ws.views.sheetView[0].showGridLines = True
-
                 ws.append(headers)
-                for row_data in data_rows:
-                    ws.append(row_data)
+                for row_data in data_rows: ws.append(row_data)
 
                 for col in ws.columns:
                     max_len = max(len(str(cell.value or '')) for cell in col)
                     col_letter = openpyxl_utils.get_column_letter(col[0].column)
                     ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
                 wb.save(file_path)
             else:
-                if file_path.endswith(".xlsx") and not HAS_OPENPYXL:
-                    file_path = file_path.rsplit('.', 1)[0] + '.csv'
-                    messagebox.showinfo("Export Notice", "openpyxl is not installed. Saving file as clean CSV instead.")
-
                 with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
                     writer = csv.writer(f)
                     writer.writerow(headers)
                     writer.writerows(data_rows)
 
-            self.status.config(text=f"Exported {len(self.rows)} locators successfully!")
             messagebox.showinfo("Export Successful", f"Locators exported successfully to:\n{file_path}")
         except Exception as ex:
-            messagebox.showerror("Export Failed", f"Could not export file:\n{str(ex)}")
+            messagebox.showerror("Export Failed", str(ex))
 
     def pick_element_interactive(self):
         url = self.url_entry.get().strip()
         if not url:
-            messagebox.showwarning("Missing URL", "Please enter a valid URL to pick from.")
+            messagebox.showwarning("Missing URL", "Please enter a valid URL.")
             return
         
         if self.picker_driver:
             try:
                 self.picker_driver.get(url)
-                self.status.config(text="Browser navigated to new URL.")
                 return
             except Exception:
                 self.picker_driver = None
@@ -674,59 +968,49 @@ class App:
                 document.body.appendChild(overlay);
 
                 document.addEventListener('mouseover', function(e) {{
-                    if (!window.__pickerEnabled) {{
-                        overlay.style.width = '0px';
-                        overlay.style.height = '0px';
-                        return;
-                    }}
+                    if (!window.__pickerEnabled) {{ overlay.style.width = '0px'; overlay.style.height = '0px'; return; }}
                     let rect = e.target.getBoundingClientRect();
-                    overlay.style.top = rect.top + 'px';
-                    overlay.style.left = rect.left + 'px';
-                    overlay.style.width = rect.width + 'px';
-                    overlay.style.height = rect.height + 'px';
+                    overlay.style.top = rect.top + 'px'; overlay.style.left = rect.left + 'px';
+                    overlay.style.width = rect.width + 'px'; overlay.style.height = rect.height + 'px';
                 }}, true);
 
                 document.addEventListener('click', function(e) {{
-                    if (!window.__pickerEnabled) {{
-                        return;
-                    }}
-                    e.preventDefault();
-                    e.stopPropagation();
+                    if (!window.__pickerEnabled) return;
+                    e.preventDefault(); e.stopPropagation();
                     window.__selectedElementHtml = e.target.outerHTML;
                 }}, true);
                 """
                 self.picker_driver.execute_script(script)
                 
+                last_tracked_url = ""
                 while self.picker_active and self.picker_driver:
                     try:
+                        current_url = self.picker_driver.current_url
+                        if current_url and current_url != last_tracked_url:
+                            last_tracked_url = current_url
+                            self.root.after(0, lambda u=current_url: self.update_url_input(u))
+
                         self.picker_driver.execute_script("""
                             if (!window.__pickerInjected) {
                                 window.__pickerInjected = true;
                                 window.__selectedElementHtml = null;
                                 let overlay = document.createElement('div');
-                                overlay.style.position = 'fixed';
-                                overlay.style.zIndex = '999999';
-                                overlay.style.border = '2px solid #D93838';
-                                overlay.style.background = 'rgba(217, 56, 56, 0.15)';
-                                overlay.style.pointerEvents = 'none';
-                                document.body.appendChild(overlay);
+                                overlay.style.position = 'fixed'; overlay.style.zIndex = '999999';
+                                overlay.style.border = '2px solid #D93838'; overlay.style.background = 'rgba(217, 56, 56, 0.15)';
+                                overlay.style.pointerEvents = 'none'; document.body.appendChild(overlay);
                                 document.addEventListener('mouseover', function(e) {
                                     if (!window.__pickerEnabled) return;
                                     let rect = e.target.getBoundingClientRect();
-                                    overlay.style.top = rect.top + 'px';
-                                    overlay.style.left = rect.left + 'px';
-                                    overlay.style.width = rect.width + 'px';
-                                    overlay.style.height = rect.height + 'px';
+                                    overlay.style.top = rect.top + 'px'; overlay.style.left = rect.left + 'px';
+                                    overlay.style.width = rect.width + 'px'; overlay.style.height = rect.height + 'px';
                                 }, true);
                                 document.addEventListener('click', function(e) {
                                     if (!window.__pickerEnabled) return;
-                                    e.preventDefault();
-                                    e.stopPropagation();
+                                    e.preventDefault(); e.stopPropagation();
                                     window.__selectedElementHtml = e.target.outerHTML;
                                 }, true);
                             }
                         """)
-                        
                         res = self.picker_driver.execute_script("return window.__selectedElementHtml;")
                         if res:
                             self.picker_driver.execute_script("window.__selectedElementHtml = null;")
@@ -735,55 +1019,38 @@ class App:
                         break
                     time.sleep(0.4)
             except Exception as ex:
-                err_msg = str(ex)
-                self.root.after(0, lambda msg=err_msg: messagebox.showerror("Picker Error", msg))
+                self.root.after(0, lambda msg=str(ex): messagebox.showerror("Picker Error", msg))
             finally:
                 self.picker_active = False
                 self.picker_driver = None
                 self.root.after(0, lambda: self.close_browser_btn.config(state="disabled"))
-                self.root.after(0, lambda: self.pick_mode_chk.config(state="disabled"))
-                self.root.after(0, lambda: self.nav_back_btn.config(state="disabled"))
-                self.root.after(0, lambda: self.nav_fwd_btn.config(state="disabled"))
-                self.root.after(0, lambda: self.nav_refresh_btn.config(state="disabled"))
 
         threading.Thread(target=background_picker, daemon=True).start()
+
+    def update_url_input(self, url):
+        self.url_entry.delete(0, tk.END)
+        self.url_entry.insert(0, url)
 
     def update_pick_mode(self):
         if self.picker_driver:
             val = "true" if self.pick_mode_var.get() else "false"
-            try:
-                self.picker_driver.execute_script(f"window.__pickerEnabled = {val};")
-                state_str = "Enabled (Clicking captures elements)" if self.pick_mode_var.get() else "Disabled (Free browser navigation mode)"
-                self.status.config(text=f"Pick Mode: {state_str}")
-            except Exception:
-                pass
+            try: self.picker_driver.execute_script(f"window.__pickerEnabled = {val};")
+            except Exception: pass
 
     def browser_back(self):
         if self.picker_driver:
-            try:
-                self.picker_driver.back()
-                self.picker_driver.execute_script("window.__pickerInjected = false;")
-                self.status.config(text="Navigated back in browser.")
-            except Exception as ex:
-                messagebox.showerror("Navigation Error", str(ex))
+            try: self.picker_driver.back(); self.picker_driver.execute_script("window.__pickerInjected = false;")
+            except Exception as ex: messagebox.showerror("Error", str(ex))
 
     def browser_forward(self):
         if self.picker_driver:
-            try:
-                self.picker_driver.forward()
-                self.picker_driver.execute_script("window.__pickerInjected = false;")
-                self.status.config(text="Navigated forward in browser.")
-            except Exception as ex:
-                messagebox.showerror("Navigation Error", str(ex))
+            try: self.picker_driver.forward(); self.picker_driver.execute_script("window.__pickerInjected = false;")
+            except Exception as ex: messagebox.showerror("Error", str(ex))
 
     def browser_refresh(self):
         if self.picker_driver:
-            try:
-                self.picker_driver.refresh()
-                self.picker_driver.execute_script("window.__pickerInjected = false;")
-                self.status.config(text="Refreshed browser page.")
-            except Exception as ex:
-                messagebox.showerror("Navigation Error", str(ex))
+            try: self.picker_driver.refresh(); self.picker_driver.execute_script("window.__pickerInjected = false;")
+            except Exception as ex: messagebox.showerror("Error", str(ex))
 
     def close_picker_browser(self):
         self.picker_active = False
@@ -792,52 +1059,28 @@ class App:
             except Exception: pass
             self.picker_driver = None
         self.close_browser_btn.config(state="disabled")
-        self.pick_mode_chk.config(state="disabled")
-        self.nav_back_btn.config(state="disabled")
-        self.nav_fwd_btn.config(state="disabled")
-        self.nav_refresh_btn.config(state="disabled")
-        self.status.config(text="Picker browser closed.")
+        self.status.config(text="Browser closed.")
 
     def on_element_picked(self, html_content):
         self.html.delete("1.0", "end")
         self.html.insert("1.0", str(html_content))
-        self.status.config(text="Element clicked & captured! Locators generated.")
+        self.status.config(text="Element captured! Locators generated.")
         self.generate()
 
     def test_live_url(self):
         c = self.selected()
         if not c:
-            messagebox.showwarning("No Locator Selected", "Please select a locator row first.")
+            messagebox.showwarning("Select Row", "Please select a locator row first.")
             return
         url = self.url_entry.get().strip()
-        if not url:
-            messagebox.showwarning("Missing URL", "Please enter a valid URL.")
-            return
-        
-        self.status.config(text="Testing locator on live URL via Headless Chrome...")
-        self.root.update_idletasks()
-        
         driver = None
         try:
-            options = ChromeOptions()
-            options.add_argument("--headless")
-            driver = webdriver.Chrome(options=options)
-            driver.get(url)
-            
-            kind = c["kind"]
-            expr = c["expr"]
-            matches = 0
-            if kind == "CSS":
-                matches = len(driver.find_elements(SelBy.CSS_SELECTOR, expr))
-            else:
-                matches = len(driver.find_elements(SelBy.XPATH, expr))
-                
-            messagebox.showinfo("Live Test Result", f"URL: {url}\n\nLocator: {expr}\nLive Elements Found: {matches}")
-            self.status.config(text=f"Live test complete: found {matches} matching element(s).")
+            options = ChromeOptions(); options.add_argument("--headless")
+            driver = webdriver.Chrome(options=options); driver.get(url)
+            matches = len(driver.find_elements(SelBy.CSS_SELECTOR, c["expr"])) if c["kind"] == "CSS" else len(driver.find_elements(SelBy.XPATH, c["expr"]))
+            messagebox.showinfo("Live Test Result", f"Elements Found on Live URL: {matches}")
         except Exception as ex:
-            err_msg = str(ex)
-            messagebox.showerror("Live Test Error", err_msg)
-            self.status.config(text="Live test failed.")
+            messagebox.showerror("Error", str(ex))
         finally:
             if driver: driver.quit()
 
@@ -845,52 +1088,63 @@ class App:
         s = self.tree.selection()
         return self.rows[int(s[0])] if s else None
 
-    def java(self, c):
+    def format_framework_code(self, c, framework):
         expr = c["expr"]
-        if c["kind"] == "XPath": return f'By.xpath("{esc(expr)}")'
-        return f'By.cssSelector("{esc(expr)}")'
+        kind = c["kind"]
+        if framework == "Java Selenium":
+            return f'By.xpath("{esc(expr)}")' if kind == "XPath" else f'By.cssSelector("{esc(expr)}")'
+        elif framework == "Python Selenium":
+            return f'driver.find_element({"By.XPATH" if kind == "XPath" else "By.CSS_SELECTOR"}, "{esc(expr)}")'
+        elif framework == "Playwright":
+            return f'page.locator("xpath={esc(expr)}")' if kind == "XPath" else f'page.locator("{esc(expr)}")'
+        elif framework == "Cypress":
+            return f'cy.xpath("{esc(expr)}")' if kind == "XPath" else f'cy.get("{esc(expr)}")'
+        return expr
 
     def preview(self, _=None):
-        c = self.selected()
-        if c: self.preview_var.set("Java: " + self.java(c))
+        s = self.tree.selection()
+        if not s: return
+        c = self.rows[int(s[0])]
+        fw = self.framework_var.get()
+        self.preview_var.set(f"{fw}: " + self.format_framework_code(c, fw))
+        self.update_pom_code_preview()
 
     def copy(self, text):
         self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
-        self.status.config(text="Copied to clipboard")
 
     def copy_expr(self):
-        c = self.selected()
-        if c: self.copy(c["expr"])
-        else: messagebox.showinfo("Select a locator", "Select a row first.")
+        s = self.tree.selection()
+        if not s:
+            messagebox.showinfo("Select a row", "Select at least one row first.")
+            return
+        if len(s) == 1:
+            self.copy(self.rows[int(s[0])]["expr"])
+        else:
+            expressions = "\n".join(self.rows[int(item)]["expr"] for item in s)
+            self.copy(expressions)
+            self.status.config(text=f"Copied {len(s)} expressions to clipboard.")
 
-    def copy_java(self):
-        c = self.selected()
-        if c: self.copy(self.java(c))
-        else: messagebox.showinfo("Select a locator", "Select a row first.")
-
-    def copy_all(self):
-        if not self.rows: messagebox.showinfo("No locators", "Generate locators first."); return
-        out = ["// Generated candidates; verify against the full page before use.", "import org.openqa.selenium.By;", ""]
-        for i, c in enumerate(self.rows, 1):
-            count = c["count"] if c["count"] is not None else "unknown"
-            out += [f'// {c["kind"]} | {c["strategy"]} | {c["rank"]} ({c["score"]}/100) | fragment matches: {count}',
-                    f'private final By locator{i} = {self.java(c)};', ""]
-        self.copy("\\n".join(out))
+    def copy_framework_code(self):
+        s = self.tree.selection()
+        if not s:
+            messagebox.showinfo("Select a row", "Select at least one row first.")
+            return
+        fw = self.framework_var.get()
+        if len(s) == 1:
+            self.copy(self.format_framework_code(self.rows[int(s[0])], fw))
+        else:
+            codes = "\n".join(self.format_framework_code(self.rows[int(item)], fw) for item in s)
+            self.copy(codes)
+            self.status.config(text=f"Copied {len(s)} code bindings to clipboard.")
 
 def main():
     try:
         root = tk.Tk()
-        try:
-            if "vista" in ttk.Style().theme_names(): ttk.Style().theme_use("vista")
-        except Exception: pass
         App(root)
         root.mainloop()
     except Exception as e:
-        err = traceback.format_exc()
-        print(err)
-        root_err = tk.Tk()
-        root_err.withdraw()
-        messagebox.showerror("Startup Error", f"An error occurred while launching:\n\n{e}")
+        traceback.print_exc()
+        input("\n[ERROR] Application crashed. Press Enter to exit...")
 
 if __name__ == "__main__":
     main()
