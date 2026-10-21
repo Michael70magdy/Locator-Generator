@@ -1,261 +1,348 @@
-# 🎯 Locator Generator
+# Locator Generator Pro
 
-A Python desktop utility for generating, comparing, validating, and exporting CSS and XPath locator candidates for Selenium-based UI automation.
+A Python desktop utility for QA engineers and test automation developers
+to generate, compare, organize, export, and audit CSS/XPath locators. It
+combines HTML-fragment analysis with optional Selenium-powered live-page
+workflows and framework-aware code previews.
 
-Locator Generator combines static HTML-fragment analysis with optional live Chrome workflows. It ranks candidate selectors using a transparent heuristic, filters unwanted patterns, supports interactive element picking, and can export results for review or reuse in Selenium Java tests.
+> **Important:** Locator scores and auto-heal suggestions are
+> heuristics. Validate every selector and generated code against your
+> application before using it in a test suite.
 
-> **Important:** Scores are heuristic guidance, not a guarantee of uniqueness or long-term stability. Always review and validate locators against the actual rendered page.
+## Contents
 
-## ✨ Features
+-   [Overview](#overview)
+-   [Key Features](#key-features)
+-   [Supported Frameworks](#supported-frameworks)
+-   [How It Works](#how-it-works)
+-   [Installation](#installation)
+-   [Run the Application](#run-the-application)
+-   [Quick Start](#quick-start)
+-   [Live Browser Features](#live-browser-features)
+-   [POM Export](#pom-export)
+-   [Locator Health Auditor](#locator-health-auditor)
+-   [Export Formats](#export-formats)
+-   [Dependencies and Optional
+    Capabilities](#dependencies-and-optional-capabilities)
+-   [Limitations](#limitations)
+-   [Recommended Workflow](#recommended-workflow)
+-   [Responsible Use](#responsible-use)
 
-- **CSS and XPath candidate generation** from element attributes, text, classes, parent context, and DOM structure.
-- **Heuristic stability scores** from 0–100 with labels: Excellent, Strong, Fair, and Weak.
-- **Strategy explanations** to help compare test attributes, IDs, semantic attributes, text, classes, and structural paths.
-- **Match counts** where the current HTML parser can evaluate a candidate.
-- **Ignore-pattern filtering** to suppress selectors containing volatile tokens such as `css-`, `sc-`, or `ng-star-inserted`.
-- **HTML fragment mode** for pasted markup or a sample element.
-- **Whole-page scanning** using Selenium with headless Chrome.
-- **Interactive Chrome picker** with hover highlighting and click-to-capture HTML.
-- **Live locator testing** against a target URL.
-- **Selenium Java output** using `By.cssSelector(...)` and `By.xpath(...)`.
-- **Copy selected / copy all** helpers for moving candidates into test code.
-- **Excel (`.xlsx`) and CSV export** with strategy, score, match count, Java binding, and notes.
-- **Dark and light themes**.
-- **Built-in About & User Manual** covering setup and workflows.
+## Overview
 
-## 🧰 Technology stack
+Locator Generator Pro helps you move from a DOM element to candidate
+selectors and automation bindings. It provides a dashboard for locator
+generation and review, a Page Object Model (POM) export workspace, a
+locator health auditor with fallback suggestions, and an in-app manual.
 
-- Python 3.8+
-- Tkinter — desktop GUI
-- BeautifulSoup 4 — HTML parsing
-- Selenium — live Chrome browser automation
-- lxml — XPath evaluation against parsed HTML
-- openpyxl — Excel workbook export
+## Key Features
 
-Some live-browser and export capabilities depend on optional packages being installed.
+### 1. Locator Candidate Generation
 
-## 📦 Installation
+-   Analyze a pasted HTML fragment.
+-   Generate CSS and XPath candidates from common element attributes,
+    text, classes, parent context, and DOM structure.
+-   Rank candidates using a heuristic score from 0--100, with labels:
+    **Excellent**, **Strong**, **Fair**, and **Weak**.
+-   Display strategy, expression, estimated match count when available,
+    and explanatory notes.
+-   Configure comma-separated ignore patterns to filter unwanted
+    candidate expressions.
 
-### 1. Prerequisites
+The generator gives preference to signals such as `data-testid`,
+`data-test`, `data-qa`, `id`, `name`, and `aria-label`. Class-based,
+generic tag, and structural-path selectors generally receive lower
+scores. These are recommendations, not guarantees of selector quality.
 
-- Python 3.8 or newer
-- Google Chrome installed for live browser workflows
-- Network access to the target page for live scanning/testing
-- A working Selenium-compatible Chrome/WebDriver setup. Selenium Manager may manage the driver in supported environments.
+### 2. Live Page Scanning and Element Picker
 
-### 2. Install dependencies
+When Selenium is installed and Chrome can be launched, the app can:
 
-On Windows, open Command Prompt or PowerShell in your project directory and run:
+-   Scan a target URL and produce top locator candidates for selected
+    page elements.
+-   Open an interactive browser picker that highlights hovered elements
+    and captures a clicked element's HTML.
+-   Test a selected locator against a live URL.
+-   Provide browser back, forward, refresh, pick-mode, and close
+    controls.
 
-```bash
+Live-page support depends on the target site's behavior and the local
+browser/Selenium environment.
+
+### 3. Framework-Aware Code Bindings
+
+Select a framework to preview or copy locator code for:
+
+-   **Java Selenium**
+-   **Python Selenium**
+-   **Playwright**
+-   **Cypress**
+
+The tool formats the generated CSS/XPath expression for the selected
+framework. Review the result in context; generated bindings do not
+replace a complete test or framework setup.
+
+### 4. Page Object Model (POM) Export
+
+-   Add multiple selected locator candidates to a POM workspace.
+-   Generate descriptive variable names from locator expressions.
+-   Skip duplicate expressions and avoid duplicate variable names.
+-   Set the target page class name.
+-   Preview and copy the generated class definition.
+
+The generated POM code is a starting point. Adapt imports, visibility,
+element access, waits, and project conventions as needed.
+
+### 5. Locator Health Auditor & Fallback Suggestions
+
+-   Audit a list of locators against a live URL.
+-   Report whether a locator matches elements or returns zero matches.
+-   Identify invalid locator expressions as failed checks.
+-   Suggest a simple fallback in some cases when the original locator
+    appears broken.
+
+**Auto-healing is heuristic and limited.** Suggestions may be
+unavailable or incorrect; manually inspect and re-test them before
+replacing a production locator. The feature does not use an external AI
+service.
+
+### 6. Export and Productivity
+
+-   Export results to `.xlsx` when `openpyxl` is available.
+-   Export to CSV as an alternative.
+-   Include locator type, strategy, expression, stability rank/score,
+    match count, framework code binding, and notes.
+-   Copy one or multiple expressions or framework bindings.
+-   Switch between dark and light themes.
+-   Access the user manual from the **Manual & Docs** tab.
+
+## Supported Frameworks
+
+  Framework         Generated binding style
+  ----------------- -----------------------------------------
+  Java Selenium     `By.cssSelector(...)` / `By.xpath(...)`
+  Python Selenium   `driver.find_element(...)`
+  Playwright        `page.locator(...)`
+  Cypress           `cy.get(...)` / `cy.xpath(...)`
+
+The tool generates bindings; it does not install or configure these
+automation frameworks in your project.
+
+## How It Works
+
+1.  **Provide an element:** paste HTML into the Dashboard, use the
+    built-in example, or capture an element from a live page.
+2.  **Generate candidates:** the app extracts attributes and contextual
+    signals and creates candidate CSS/XPath expressions.
+3.  **Review scores and notes:** use the ranking to prioritize
+    candidates, then validate uniqueness and semantic correctness.
+4.  **Use the output:** copy a selector or framework binding, add
+    candidates to POM Export, or send them to the Health Auditor.
+5.  **Export results:** save the generated candidate list as Excel or
+    CSV for review or documentation.
+
+## Installation
+
+### Requirements
+
+-   Python 3.8 or later
+-   Tkinter support for the desktop GUI
+-   Google Chrome for Selenium-powered live browser features
+-   Compatible Selenium/Chrome setup for live scanning, picking,
+    testing, and auditing
+
+### Install dependencies
+
+From a terminal in the project directory:
+
+``` bash
 py -m pip install beautifulsoup4 selenium openpyxl lxml
 ```
 
-Alternatively:
+On systems where `py` is not available, use:
 
-```bash
+``` bash
 python -m pip install beautifulsoup4 selenium openpyxl lxml
 ```
 
-### 3. Run the application
+`lxml` is used where available for XPath candidate match counting. The
+application can still attempt HTML parsing through BeautifulSoup's
+built-in parser.
 
-Save the script in your project directory (for example, as `locator_generator.py`) and run:
+## Run the Application
 
-```bash
+Save the Python source file in your project directory, then run it. For
+example, if the file is named `locator_generator.py`:
+
+``` bash
 py locator_generator.py
 ```
 
-If your downloaded script has a different filename, use that filename in the command.
+Or:
 
-## 🖥️ How to use it
-
-### Workflow A — Generate locators from an HTML fragment
-
-1. Launch the application.
-2. In **HTML Input Fragment**, paste the HTML element markup.
-3. Optionally click **Load Example** to inspect a sample form field.
-4. Configure **Ignore Patterns** if you want to filter volatile selector strings. Use comma-separated patterns.
-5. Click **Generate Locators**.
-6. Compare the candidate locator expression, strategy, score, match count, and note.
-7. Select a candidate to preview the corresponding Selenium Java `By` expression.
-8. Copy the expression or Java binding, or export the candidate list.
-
-The current implementation parses the fragment and chooses a preferred element based on available attributes such as `data-testid`, `data-test`, `data-qa`, `id`, `name`, `aria-label`, and `placeholder`. If none are present, it falls back to a parsed element. For best results, provide markup that clearly represents the element you want to inspect.
-
-### Workflow B — Scan a live page
-
-1. Enter the target page URL.
-2. Click **Scan Whole Page**.
-3. The tool opens Chrome in headless mode through Selenium, retrieves the page source, and generates top candidate locators for a bounded set of common controls and selected identified/test-attributed elements.
-4. Review the results and use live testing or export as needed.
-
-This is a bounded scan, not a guarantee that every element on a complex page will be included. Dynamic content may require additional handling.
-
-### Workflow C — Use the interactive browser picker
-
-1. Enter the target URL and click **Open Picker**.
-2. In the Chrome window, move the pointer over elements to see the highlight overlay.
-3. With **Pick Mode Active** enabled, click the target element.
-4. The tool captures the element's outer HTML and generates locator candidates.
-5. Use **Back**, **Forward**, and **Refresh** to navigate when needed.
-6. Disable pick mode to interact with the page without capturing clicks, then enable it again when ready.
-7. Click **Close Browser** when finished.
-
-The picker intercepts clicks while pick mode is active so that an element can be captured. Use it only on pages where you are authorized to test.
-
-### Workflow D — Test a locator against a live URL
-
-1. Generate or select a candidate locator.
-2. Enter the URL where the locator should be checked.
-3. Click **Test Locator**.
-4. Review the number of matching elements reported by Selenium.
-
-A successful query only confirms that the expression can be evaluated on that page at that time. Confirm that it identifies the intended element, especially when the count is greater than one.
-
-### Workflow E — Copy or export results
-
-- **Copy Selected Expression** copies the CSS or XPath expression.
-- **Copy Selected Java By** copies a Java Selenium binding.
-- **Copy All Java** copies the current candidate set as Java `By` declarations with comments.
-- **Export to Excel** opens a save dialog for `.xlsx` or `.csv`.
-
-The export contains the locator type, strategy, expression, rank, score, match count, Java binding, and notes. If `openpyxl` is unavailable, Excel export may fall back to CSV.
-
-## 📊 Understanding the scores
-
-Scores prioritize strategies using a fixed heuristic in the code. Examples include:
-
-| Strategy / attribute | Example score | Notes |
-|---|---:|---|
-| `data-testid` | 99 | Dedicated test attribute |
-| `data-test` | 98 | Dedicated test attribute |
-| `data-qa` | 97 | QA-oriented attribute |
-| ID selector shorthand | 96 | Concise ID selector |
-| XPath using `id` | 95 | ID-based XPath |
-| `id` attribute | 94 | Good if stable and unique |
-| `name` | 91 | Semantic form attribute |
-| `aria-label` | 88 | Accessibility-oriented attribute |
-| Class + text combination | 86 | Contextual candidate |
-| `placeholder` | 81 | Can change with UI copy |
-| Exact normalized text | 78 | Sensitive to text changes |
-| Tag + all classes | 73 | Depends on class stability |
-| Generic tag / DOM path | 30–35 | Often less specific or more brittle |
-
-The application labels scores as:
-
-- **Excellent:** 90–100
-- **Strong:** 75–89
-- **Fair:** 55–74
-- **Weak:** below 55
-
-These are code-defined ranking thresholds. They are not measured probabilities and do not guarantee that a locator will remain stable after an application update.
-
-## 🧹 Ignore patterns
-
-The default patterns include:
-
-```text
-css-, sc-, ng-star-inserted
+``` bash
+python locator_generator.py
 ```
 
-Enter multiple patterns separated by commas. The implementation treats them as regular expressions and checks them case-insensitively. Use simple tokens unless you intentionally need regular-expression behavior. Invalid regular expressions may cause candidate generation to fail.
+If your filename contains parentheses, quote it in the terminal when
+needed, for example:
 
-Ignore patterns can help remove known noisy class names, but do not filter out meaningful attributes without checking the impact on locator quality.
-
-## 🧪 Example Selenium Java output
-
-CSS selector:
-
-```java
-By.cssSelector("[data-testid=\"login-button\"]")
+``` bash
+py "locator_generator(1).py"
 ```
 
-XPath:
+## Quick Start
 
-```java
-By.xpath("//button[@id='login-button']")
+### Generate locators from an HTML snippet
+
+1.  Launch the app and open **Dashboard**.
+2.  Click **Load Example**, or paste the target element's HTML into the
+    HTML DOM input.
+3.  Click **Generate Locators**.
+4.  Review candidate type, strategy, score, match count, and notes.
+5.  Select a row to preview its framework binding.
+6.  Use **Copy Selected Expression** or **Copy Code Binding** to reuse
+    the output.
+
+Example HTML:
+
+``` html
+<div class="form-group">
+  <label for="username">Username</label>
+  <input id="username" name="userName"
+         class="form-control"
+         placeholder="Enter username"
+         type="text">
+</div>
 ```
 
-Use the generated expression in your page object or test, then verify it against the actual page and your framework conventions.
+### Scan a live page
 
-## 📁 Project layout
+1.  Enter a URL in **Target URL**.
+2.  Click **Scan Whole Page** to collect top candidates for relevant
+    page elements, or **Open Picker** to select a specific element
+    visually.
+3.  Review and validate the results before adding them to your tests.
 
-```text
-your-project/
-├── locator_generator.py
-└── README.md
-```
+### Change framework output
 
-The application is currently implemented as a single Python script. The exact filename may differ in your repository.
+Use the **Framework Target** dropdown and select Java Selenium, Python
+Selenium, Playwright, or Cypress. Select a candidate to view the
+formatted binding, then copy it.
 
-## ⚠️ Limitations and notes
+## Live Browser Features
 
-- **Heuristic scoring:** scores are strategy-based, not learned from historical DOM changes.
-- **Static HTML context:** fragment analysis cannot fully reproduce the rendered application, runtime state, or dynamically injected elements.
-- **Live scanning scope:** the current whole-page scan is bounded to a subset of common controls and elements with selected attributes.
-- **Browser compatibility:** live features require Selenium and a working Chrome/WebDriver setup.
-- **Match counts:** counts from the parsed fragment are not equivalent to counts on the complete live page.
-- **Modern browser features:** shadow DOM, complex frames, and highly dynamic applications may need additional locator strategies or manual inspection.
-- **Regex patterns:** ignore patterns are treated as regular expressions.
-- **Security and authorization:** use the tool only on pages you are permitted to inspect or test. Avoid placing credentials or sensitive data in exported reports.
+The live browser controls use Selenium with Chrome. Depending on your
+installed Selenium version and environment, Selenium Manager may help
+locate a compatible driver automatically. If Chrome cannot launch, check
+Chrome installation, network/driver restrictions, and Selenium setup.
 
-## 🛠️ Troubleshooting
+Live features may be affected by authentication, redirects, dynamic
+rendering, frames, shadow DOM, browser security restrictions, or
+application-specific behavior.
 
-### Live buttons are disabled or unavailable
-Install Selenium:
+## POM Export
 
-```bash
-py -m pip install selenium
-```
+1.  Select one or more locator rows in the Dashboard (use Ctrl-click or
+    Shift-click for multiple selections).
+2.  Click **Add Selected to POM**.
+3.  Open **POM Export**.
+4.  Set a class name such as `LoginPage`.
+5.  Review the generated class preview.
+6.  Click **Copy POM Class Code**.
 
-### HTML parsing is unavailable
-Install BeautifulSoup:
+Duplicate expressions are skipped, and duplicate variable names receive
+numeric suffixes.
 
-```bash
-py -m pip install beautifulsoup4
-```
+## Locator Health Auditor
 
-### XPath match counts are unavailable
-Install `lxml`:
+1.  Open **Health Auditor & Auto-Heal**.
+2.  Enter the audit target URL.
+3.  Paste one locator per line, or send selected candidates from the
+    Dashboard.
+4.  Click **Run Audit & Auto-Heal**.
+5.  Review each locator's health status and any suggested replacement.
 
-```bash
-py -m pip install lxml
-```
+The current implementation treats expressions beginning with `//` or `(`
+as XPath and other expressions as CSS selectors. Ensure your locator
+syntax matches this convention when pasting locators into the auditor.
 
-### Excel export does not create an `.xlsx` file
-Install `openpyxl`:
+## Export Formats
 
-```bash
-py -m pip install openpyxl
-```
+Use **Export** on the Dashboard:
 
-### Chrome fails to start
-- Confirm Google Chrome is installed.
-- Update Selenium.
-- Check that your environment permits Chrome/WebDriver to launch.
-- Review the error shown by the application; browser policies or network restrictions may affect live workflows.
+-   **Excel (`.xlsx`)** --- requires `openpyxl`.
+-   **CSV (`.csv`)** --- suitable for spreadsheets, version control, or
+    further processing.
 
-## 💡 Best practices
+The export contains the candidate locator, type, strategy, score,
+estimated matches, framework-specific binding, and notes.
 
-1. Prefer dedicated test attributes such as `data-testid` when the application team supports them.
-2. Prefer stable, unique semantic attributes over long structural paths.
-3. Check the locator against the full page, not only a copied fragment.
-4. Verify that the locator points to the intended element and review match counts.
-5. Avoid relying on classes that change with styling, build output, or UI state.
-6. Keep locators in Page Objects or another consistent abstraction in your automation framework.
-7. Revalidate important locators when the application UI changes.
+## Dependencies and Optional Capabilities
 
-## 🎯 Intended audience
+  -----------------------------------------------------------------------
+  Package                             Purpose
+  ----------------------------------- -----------------------------------
+  `beautifulsoup4`                    Parses pasted HTML and page source
 
-- QA engineers and software testers
-- Selenium automation engineers and SDETs
-- QA learners practicing XPath and CSS selectors
-- Teams that want a lightweight desktop helper for locator discovery and documentation
+  `selenium`                          Live browser scanning, element
+                                      picker, locator testing, and
+                                      auditing
 
-## 📄 License
+  `openpyxl`                          Excel workbook export
 
-No license is specified in the supplied project source. Add a `LICENSE` file and update this section if you intend to publish the project for reuse.
+  `lxml`                              XPath candidate match counting when
+                                      available
 
----
+  `tkinter`                           Desktop GUI (typically bundled with
+                                      Python; packaging varies by OS)
+  -----------------------------------------------------------------------
 
-**Locator Generator** — discover candidate locators, validate them, and move them into your Selenium workflow with less manual effort.
+The app checks for several dependencies at startup. Without
+BeautifulSoup, HTML-based generation is unavailable. Without Selenium,
+live browser features are disabled. Without `openpyxl`, export can use
+CSV instead.
+
+## Limitations
+
+-   Scores are heuristic and cannot prove a selector will remain stable
+    after application changes.
+-   A match count greater than zero does not prove the selector
+    identifies the intended element; a selector matching multiple
+    elements may be ambiguous.
+-   Live-page scanning processes a bounded set of relevant elements and
+    may not cover every element on complex pages.
+-   The picker captures an element's outer HTML; it does not
+    automatically solve every iframe, shadow DOM, or dynamic-content
+    scenario.
+-   Fallback suggestions are limited and should not be treated as
+    guaranteed repairs.
+-   Framework bindings and POM code may need adaptation to match your
+    project's conventions and dependencies.
+-   Browser startup and compatibility depend on the local
+    Chrome/Selenium environment.
+
+## Recommended Workflow
+
+1.  Prefer stable, semantic attributes such as dedicated test IDs where
+    available.
+2.  Check that the locator uniquely identifies the intended element.
+3.  Test the locator against the target application and relevant states.
+4.  Use POM Export to organize reusable locators, then review the
+    generated code.
+5.  Run the Health Auditor after meaningful UI changes, and inspect
+    every fallback suggestion.
+6.  Keep important locators covered by automated tests and maintain them
+    with code review.
+
+## Responsible Use
+
+Use live browser features only against applications and environments you
+are authorized to access and test. Do not use the tool to bypass access
+controls or interact with systems without permission.
+
+## License
+
+No license is specified in the provided source file. Add a `LICENSE`
+file and update this section if you intend to distribute the project
+publicly.
