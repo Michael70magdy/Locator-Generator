@@ -116,7 +116,16 @@ class PersistentCheckMenu(QMenu):
                     return
         super().keyPressEvent(event)
 
-def generate_candidates(soup, el):
+def make_xpath_snapshot(soup):
+    """Create one reusable lxml tree for XPath match counts on this page."""
+    try:
+        from lxml import html
+        return html.fromstring(str(soup))
+    except Exception:
+        return None
+
+
+def generate_candidates(soup, el, xpath_root=None):
     tag = el.name.lower()
     candidates, seen = [], set()
     text = " ".join(el.stripped_strings)
@@ -132,10 +141,9 @@ def generate_candidates(soup, el):
         if kind == "CSS":
             try: count = len(soup.select(expr))
             except Exception: pass
-        elif kind == "XPath":
+        elif kind == "XPath" and xpath_root is not None:
             try:
-                from lxml import html
-                count = len(html.fromstring(str(soup)).xpath(expr))
+                count = len(xpath_root.xpath(expr))
             except Exception: pass
         # A selector that does not resolve to the target element is not useful
         # to the user. Keep unknown counts (for optional parser support), but
@@ -387,6 +395,7 @@ def scan_page_job(url, excluded_types=(), excluded_strategies=()):
     try:
         driver.get(url)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        xpath_root = make_xpath_snapshot(soup)
         elements = soup.find_all(['input', 'button', 'a', 'select', 'textarea', 'form'])
         others = soup.find_all(lambda tag: tag.has_attr('id') or tag.has_attr('data-testid') or tag.has_attr('data-qa'))
         all_elements = list(dict.fromkeys(elements + others))
@@ -394,7 +403,7 @@ def scan_page_job(url, excluded_types=(), excluded_strategies=()):
         seen_locators = set()
         for element in all_elements[:150]:
             matches = exclude_locator_candidates(
-                generate_candidates(soup, element),
+                generate_candidates(soup, element, xpath_root),
                 excluded_types, excluded_strategies,
             )
             if matches:
@@ -429,10 +438,27 @@ def test_live_job(url, candidates):
         driver.quit()
 
 
-def suggest_locator_fallbacks(soup, expr, limit=3):
+def generate_locators_job(markup, excluded_types=(), excluded_strategies=()):
+    """Parse pasted markup and generate candidates outside the GUI thread."""
+    soup = BeautifulSoup(markup, 'html.parser')
+    elements = soup.find_all(True)
+    if not elements:
+        raise ValueError('No HTML elements found. Paste a complete element.')
+    preferred_keys = ('data-testid', 'data-test', 'data-qa', 'id', 'name', 'aria-label', 'placeholder')
+    target = next((element for element in elements
+                   if any(element.get(key) for key in preferred_keys)), elements[-1])
+    xpath_root = make_xpath_snapshot(soup)
+    rows = exclude_locator_candidates(
+        generate_candidates(soup, target, xpath_root), excluded_types, excluded_strategies)
+    return {'rows': rows, 'tag': target.name}
+
+
+def suggest_locator_fallbacks(soup, expr, limit=3, xpath_root=None):
     """Suggest ranked selectors for likely related DOM elements; never claim live validation."""
     if soup is None:
         return []
+    if xpath_root is None:
+        xpath_root = make_xpath_snapshot(soup)
     hints = {'tag': None, 'id': None, 'classes': [], 'attrs': {}, 'text': None}
     xpath_tag = re.search(r'//([A-Za-z][\w:-]*)', expr)
     css_tag = re.match(r'^\s*([A-Za-z][\w:-]*)', expr)
@@ -508,7 +534,7 @@ def suggest_locator_fallbacks(soup, expr, limit=3):
     scored_elements.sort(key=lambda item: (-item[0], item[1].name))
     suggestions, seen = [], {expr}
     for evidence_score, element, reasons in scored_elements[:30]:
-        for candidate in generate_candidates(soup, element):
+        for candidate in generate_candidates(soup, element, xpath_root):
             selector = candidate['expr']
             if selector in seen:
                 continue
@@ -528,6 +554,7 @@ def audit_job(url, locators):
     try:
         driver.get(url)
         soup = BeautifulSoup(driver.page_source, 'html.parser') if BeautifulSoup else None
+        xpath_root = make_xpath_snapshot(soup) if soup is not None else None
         results, suggestions = [], []
         for expr in locators:
             by = SelBy.XPATH if expr.startswith(('//', '(', './/', '/', 'id(')) else SelBy.CSS_SELECTOR
@@ -542,7 +569,7 @@ def audit_job(url, locators):
                 continue
             if matches:
                 continue
-            fallbacks = suggest_locator_fallbacks(soup, expr)
+            fallbacks = suggest_locator_fallbacks(soup, expr, xpath_root=xpath_root)
             if fallbacks:
                 suggestions.extend((expr, selector, note) for selector, note in fallbacks)
             else:
@@ -828,12 +855,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(TITLE + ' | PySide6')
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
-        initial_width = min(1360, max(560, available.width() - 32)) if available else 1200
-        initial_height = min(850, max(440, available.height() - 48)) if available else 760
+        initial_width = min(1440, max(420, available.width() - 32)) if available else 1200
+        initial_height = min(900, max(360, available.height() - 48)) if available else 760
         self.resize(initial_width, initial_height)
-        self.setMinimumSize(min(680, initial_width), min(520, initial_height))
+        self.setMinimumSize(min(420, initial_width), min(360, initial_height))
         self.ui_scale = 1.0
         self._responsive_splitters = []
+        self._workspace_layouts = []
+        self._workspace_subtitles = []
+        self._workspace_titles = []
         self.rows = []
         self.pom_elements = []
         self.count_context = 'HTML fragment'
@@ -866,6 +896,7 @@ class MainWindow(QMainWindow):
         header.setObjectName('header')
         head = QHBoxLayout(header)
         head.setContentsMargins(22, 12, 22, 12)
+        self.header_layout = head
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title = QLabel('Locator Generator')
@@ -896,6 +927,7 @@ class MainWindow(QMainWindow):
         head.addWidget(self.zoom_in_button)
         self.theme_button = QPushButton('Light theme')
         self.theme_button.setObjectName('secondaryButton')
+        self.theme_button.setToolTip('Switch between dark and light theme.')
         self.theme_button.clicked.connect(self.toggle_theme)
         head.addWidget(self.theme_button)
         root.addWidget(header)
@@ -957,9 +989,10 @@ class MainWindow(QMainWindow):
         zoom_reset.activated.connect(self.reset_zoom)
         self.shortcuts.extend((zoom_in, zoom_out, zoom_reset))
 
-    def register_responsive_splitter(self, splitter, breakpoint=1080, ratio=0.44):
+    def register_responsive_splitter(self, splitter, breakpoint=1080, ratio=0.44, vertical_ratio=None):
         splitter.setChildrenCollapsible(False)
         splitter.setProperty('firstPaneRatio', ratio)
+        splitter.setProperty('verticalPaneRatio', vertical_ratio if vertical_ratio is not None else ratio)
         self._responsive_splitters.append((splitter, breakpoint))
 
     def change_zoom(self, delta):
@@ -973,23 +1006,41 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         width = event.size().width()
+        height = event.size().height()
         compact = width < 980 * self.ui_scale
+        short = height < 660 * self.ui_scale
         if hasattr(self, 'sidebar'):
             self.sidebar.setVisible(not compact)
         if hasattr(self, 'responsive_nav'):
             self.responsive_nav.setVisible(compact)
+            self.responsive_nav.setMinimumWidth(110 if width < 700 * self.ui_scale else 150)
             if compact and self.responsive_nav.currentIndex() != self.workspaces.currentIndex():
                 self.responsive_nav.blockSignals(True)
                 self.responsive_nav.setCurrentIndex(self.workspaces.currentIndex())
                 self.responsive_nav.blockSignals(False)
         if hasattr(self, 'header_subtitle'):
-            self.header_subtitle.setVisible(width >= 1050 * self.ui_scale)
+            self.header_subtitle.setVisible(width >= 1050 * self.ui_scale and not short)
+        if hasattr(self, 'zoom_label'):
+            self.zoom_label.setVisible(width >= 540 * self.ui_scale)
+        if hasattr(self, 'header_layout'):
+            margin_x = 10 if width < 700 * self.ui_scale else 16
+            margin_y = 5 if short else 9
+            self.header_layout.setContentsMargins(margin_x, margin_y, margin_x, margin_y)
+        if hasattr(self, 'theme_button'):
+            self.theme_button.setText('Theme' if width < 700 * self.ui_scale else ('Light theme' if self.dark else 'Dark theme'))
+        for title, subtitle, layout in zip(self._workspace_titles, self._workspace_subtitles, self._workspace_layouts):
+            subtitle.setVisible(not short)
+            margin = 8 if short else 14
+            layout.setContentsMargins(margin, margin, margin, margin)
+            layout.setSpacing(8 if short else 11)
         for splitter, breakpoint in getattr(self, '_responsive_splitters', []):
-            wanted = Qt.Orientation.Vertical if width < breakpoint * self.ui_scale else Qt.Orientation.Horizontal
+            effective_breakpoint = breakpoint * self.ui_scale
+            wanted = Qt.Orientation.Vertical if width < effective_breakpoint else Qt.Orientation.Horizontal
             if splitter.orientation() != wanted:
                 splitter.setOrientation(wanted)
                 extent = splitter.height() if wanted == Qt.Orientation.Vertical else splitter.width()
-                ratio = float(splitter.property('firstPaneRatio') or 0.44)
+                ratio_property = 'verticalPaneRatio' if wanted == Qt.Orientation.Vertical else 'firstPaneRatio'
+                ratio = float(splitter.property(ratio_property) or 0.44)
                 splitter.setSizes([max(1, round(extent * ratio)), max(1, round(extent * (1 - ratio)))])
 
     def workspace(self, title, subtitle):
@@ -1000,14 +1051,18 @@ class MainWindow(QMainWindow):
         h = QLabel(title)
         h.setObjectName('pageTitle')
         outer.addWidget(h)
-        outer.addWidget(label(subtitle, True))
+        subtitle_label = label(subtitle, True)
+        outer.addWidget(subtitle_label)
+        self._workspace_titles.append(h)
+        self._workspace_subtitles.append(subtitle_label)
+        self._workspace_layouts.append(outer)
         self.workspaces.addWidget(container)
         return outer
 
     def build_generate_workspace(self):
         outer = self.workspace('Generate Locators', 'Choose an input mode, generate ranked selectors, then export or reuse them.')
         primary_split = QSplitter(Qt.Orientation.Horizontal)
-        self.register_responsive_splitter(primary_split, 1220, ratio=0.30)
+        self.register_responsive_splitter(primary_split, 1210, ratio=0.29, vertical_ratio=0.42)
         outer.addWidget(primary_split, 1)
 
         input_panel, il = panel('INPUT')
@@ -1020,6 +1075,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(text)
             b.setObjectName('modeButton')
             b.setMinimumHeight(38)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             b.setToolTip([
                 'Paste HTML or use the browser picker to capture an element.',
                 'Read eligible elements from a live page URL.',
@@ -1217,7 +1273,7 @@ class MainWindow(QMainWindow):
         right.addWidget(results_panel)
 
         lower_split = QSplitter(Qt.Orientation.Horizontal)
-        self.register_responsive_splitter(lower_split, 900, ratio=0.34)
+        self.register_responsive_splitter(lower_split, 900, ratio=0.34, vertical_ratio=0.48)
         notes_panel, nl = panel('SELECTED LOCATOR')
         self.selected_note = QPlainTextEdit()
         self.selected_note.setReadOnly(True)
@@ -1464,26 +1520,20 @@ class MainWindow(QMainWindow):
             return
         markup = self.html.toPlainText().strip()
         if not markup:
-            self.set_status('Paste HTML before generating locators.')
+            self.popup('HTML required', 'Paste HTML before generating locators.')
             self.html.setFocus()
             return
-        try:
-            soup = BeautifulSoup(markup, 'html.parser')
-            elements = soup.find_all(True)
-            if not elements:
-                raise ValueError('No HTML elements found. Paste a complete element.')
-            preferred = [e for e in elements if any(e.get(k) for k in (
-                'data-testid', 'data-test', 'data-qa', 'id', 'name', 'aria-label', 'placeholder'))]
-            target = preferred[0] if preferred else elements[-1]
-            excluded_types, excluded_strategies = self.get_excluded_locator_options()
-            self.rows = exclude_locator_candidates(
-                generate_candidates(soup, target),
-                excluded_types, excluded_strategies,
-            )
-            self.count_context = 'HTML fragment'
-            self.show_candidates(f'Target <{target.name}> · {len(self.rows)} candidates')
-        except Exception as exc:
-            self.popup('Generation error', str(exc))
+        excluded_types, excluded_strategies = self.get_excluded_locator_options()
+        self.launch_job(
+            lambda: generate_locators_job(markup, excluded_types, excluded_strategies),
+            self.populate_generated_results,
+            'Generating locator candidates…',
+        )
+
+    def populate_generated_results(self, payload):
+        self.rows = payload['rows']
+        self.count_context = 'HTML fragment'
+        self.show_candidates(f'Target <{payload["tag"]}> · {len(self.rows)} candidates')
 
     def show_candidates(self, summary):
         self.put_candidate_rows()
@@ -2004,7 +2054,7 @@ class MainWindow(QMainWindow):
         field = '#101a2b' if dark else '#f9fbfe'
         hover = '#233553' if dark else '#ddeafa'
         table_alt = '#1a263b' if dark else '#f6f9fe'
-        self.theme_button.setText('Light theme' if dark else 'Dark theme')
+        self.theme_button.setText('Theme' if self.width() < 700 * scale else ('Light theme' if dark else 'Dark theme'))
         self.zoom_label.setText(f'{round(scale * 100)}%')
         self.progress.setFixedWidth(px(170))
         self.progress.setFixedHeight(px(9))
