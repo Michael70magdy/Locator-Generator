@@ -769,8 +769,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(TITLE + ' | PySide6')
-        self.resize(1360, 850)
-        self.setMinimumSize(1000, 720)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        initial_width = min(1360, max(560, available.width() - 32)) if available else 1200
+        initial_height = min(850, max(440, available.height() - 48)) if available else 760
+        self.resize(initial_width, initial_height)
+        self.setMinimumSize(min(680, initial_width), min(520, initial_height))
+        self.ui_scale = 1.0
+        self._responsive_splitters = []
         self.rows = []
         self.pom_elements = []
         self.count_context = 'HTML fragment'
@@ -805,8 +811,29 @@ class MainWindow(QMainWindow):
         title = QLabel('Locator Generator')
         title.setObjectName('appTitle')
         title_box.addWidget(title)
-        title_box.addWidget(label('QA automation workspace  /  CSS · XPath · Page Objects · Audits', True))
+        self.header_subtitle = label('QA automation workspace  /  CSS · XPath · Page Objects · Audits', True)
+        title_box.addWidget(self.header_subtitle)
         head.addLayout(title_box, 1)
+        self.responsive_nav = ArrowComboBox()
+        self.responsive_nav.addItems(['Generate Locators', 'Page Objects', 'Health Audit', 'Help'])
+        self.responsive_nav.setMinimumWidth(150)
+        self.responsive_nav.currentIndexChanged.connect(self.switch_workspace)
+        self.responsive_nav.hide()
+        head.addWidget(self.responsive_nav)
+        self.zoom_out_button = QPushButton('A−')
+        self.zoom_out_button.setObjectName('zoomButton')
+        self.zoom_out_button.setToolTip('Zoom out (Ctrl+-)')
+        self.zoom_out_button.clicked.connect(lambda: self.change_zoom(-0.1))
+        head.addWidget(self.zoom_out_button)
+        self.zoom_label = label('100%', True)
+        self.zoom_label.setMinimumWidth(38)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head.addWidget(self.zoom_label)
+        self.zoom_in_button = QPushButton('A+')
+        self.zoom_in_button.setObjectName('zoomButton')
+        self.zoom_in_button.setToolTip('Zoom in (Ctrl++)')
+        self.zoom_in_button.clicked.connect(lambda: self.change_zoom(0.1))
+        head.addWidget(self.zoom_in_button)
         self.theme_button = QPushButton('Light theme')
         self.theme_button.setObjectName('secondaryButton')
         self.theme_button.clicked.connect(self.toggle_theme)
@@ -819,6 +846,7 @@ class MainWindow(QMainWindow):
         sidebar = QFrame()
         sidebar.setObjectName('sidebar')
         sidebar.setFixedWidth(194)
+        self.sidebar = sidebar
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(12, 20, 12, 16)
         side.setSpacing(7)
@@ -861,6 +889,46 @@ class MainWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(f'Ctrl+{index + 1}'), self)
             shortcut.activated.connect(lambda index=index: self.switch_workspace(index))
             self.shortcuts.append(shortcut)
+        zoom_in = QShortcut(QKeySequence('Ctrl++'), self)
+        zoom_in.activated.connect(lambda: self.change_zoom(0.1))
+        zoom_out = QShortcut(QKeySequence('Ctrl+-'), self)
+        zoom_out.activated.connect(lambda: self.change_zoom(-0.1))
+        zoom_reset = QShortcut(QKeySequence('Ctrl+0'), self)
+        zoom_reset.activated.connect(self.reset_zoom)
+        self.shortcuts.extend((zoom_in, zoom_out, zoom_reset))
+
+    def register_responsive_splitter(self, splitter, breakpoint=1080):
+        splitter.setChildrenCollapsible(False)
+        self._responsive_splitters.append((splitter, breakpoint))
+
+    def change_zoom(self, delta):
+        self.ui_scale = min(1.5, max(0.8, round(self.ui_scale + delta, 2)))
+        self.apply_theme()
+
+    def reset_zoom(self):
+        self.ui_scale = 1.0
+        self.apply_theme()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        width = event.size().width()
+        compact = width < 980 * self.ui_scale
+        if hasattr(self, 'sidebar'):
+            self.sidebar.setVisible(not compact)
+        if hasattr(self, 'responsive_nav'):
+            self.responsive_nav.setVisible(compact)
+            if compact and self.responsive_nav.currentIndex() != self.workspaces.currentIndex():
+                self.responsive_nav.blockSignals(True)
+                self.responsive_nav.setCurrentIndex(self.workspaces.currentIndex())
+                self.responsive_nav.blockSignals(False)
+        if hasattr(self, 'header_subtitle'):
+            self.header_subtitle.setVisible(width >= 1050 * self.ui_scale)
+        for splitter, breakpoint in getattr(self, '_responsive_splitters', []):
+            wanted = Qt.Orientation.Vertical if width < breakpoint * self.ui_scale else Qt.Orientation.Horizontal
+            if splitter.orientation() != wanted:
+                splitter.setOrientation(wanted)
+                extent = splitter.height() if wanted == Qt.Orientation.Vertical else splitter.width()
+                splitter.setSizes([max(1, round(extent * 0.44)), max(1, round(extent * 0.56))])
 
     def workspace(self, title, subtitle):
         container = QWidget()
@@ -877,11 +945,11 @@ class MainWindow(QMainWindow):
     def build_generate_workspace(self):
         outer = self.workspace('Generate Locators', 'Choose an input mode, generate ranked selectors, then export or reuse them.')
         primary_split = QSplitter(Qt.Orientation.Horizontal)
-        primary_split.setChildrenCollapsible(False)
+        self.register_responsive_splitter(primary_split, 1220)
         outer.addWidget(primary_split, 1)
 
         input_panel, il = panel('INPUT')
-        input_panel.setMinimumWidth(300)
+        input_panel.setMinimumWidth(240)
         primary_split.addWidget(input_panel)
         self.mode_buttons = []
         modebar = QHBoxLayout()
@@ -1060,7 +1128,7 @@ class MainWindow(QMainWindow):
         right.addWidget(results_panel)
 
         lower_split = QSplitter(Qt.Orientation.Horizontal)
-        lower_split.setChildrenCollapsible(False)
+        self.register_responsive_splitter(lower_split, 900)
         notes_panel, nl = panel('SELECTED LOCATOR')
         self.selected_note = QPlainTextEdit()
         self.selected_note.setReadOnly(True)
@@ -1111,7 +1179,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(bar)
 
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.setChildrenCollapsible(False)
+        self.register_responsive_splitter(split, 1180)
         outer.addWidget(split, 1)
         elems, el = panel('SELECTED ELEMENTS')
         self.pom_count = label('No elements added. Select rows from Generate Locators.', True)
@@ -1158,7 +1226,7 @@ class MainWindow(QMainWindow):
         cl.addLayout(bar)
         outer.addWidget(ctrl)
         main_split = QSplitter(Qt.Orientation.Horizontal)
-        main_split.setChildrenCollapsible(False)
+        self.register_responsive_splitter(main_split, 1180)
         outer.addWidget(main_split, 1)
         inputs, il = panel('LOCATORS TO AUDIT')
         il.addWidget(label('Paste selectors or Selenium locator declarations, one per line.', True))
@@ -1242,6 +1310,7 @@ class MainWindow(QMainWindow):
 <h3 style="color:#3b82f6;">Keyboard and dependencies</h3>
 <ul>
  <li><b>Ctrl+1 … Ctrl+4:</b> Switch between Generate Locators, Page Objects, Health Audit, and Help.</li>
+ <li><b>Zoom:</b> Use the A− and A+ buttons or Ctrl+- / Ctrl++ to resize the interface; Ctrl+0 restores 100%. Split views and navigation adapt to narrower windows.</li>
  <li><b>Tab / Shift+Tab:</b> Move between controls.</li>
  <li><b>PySide6:</b> Required for the desktop app. <b>BeautifulSoup:</b> Required for HTML parsing. <b>Selenium and Chrome:</b> Required for the picker and live browser features. <b>openpyxl:</b> Required for Excel export; CSV works without it. <b>lxml:</b> Improves XPath match counts.</li>
 </ul>
@@ -1258,6 +1327,10 @@ class MainWindow(QMainWindow):
         self.workspaces.setCurrentIndex(index)
         for number, button in enumerate(self.nav_buttons):
             button.setChecked(number == index)
+        if hasattr(self, 'responsive_nav') and self.responsive_nav.currentIndex() != index:
+            self.responsive_nav.blockSignals(True)
+            self.responsive_nav.setCurrentIndex(index)
+            self.responsive_nav.blockSignals(False)
 
     def switch_mode(self, index):
         self.modes.setCurrentIndex(index)
@@ -1793,6 +1866,8 @@ class MainWindow(QMainWindow):
 
     def apply_theme(self):
         dark = self.dark
+        scale = self.ui_scale
+        px = lambda value: max(1, round(value * scale))
         bg = '#0f172a' if dark else '#f4f7fb'
         surface = '#151e30' if dark else '#ffffff'
         sidebar = '#111b2d' if dark else '#eaf0f8'
@@ -1803,42 +1878,53 @@ class MainWindow(QMainWindow):
         hover = '#233553' if dark else '#ddeafa'
         table_alt = '#1a263b' if dark else '#f6f9fe'
         self.theme_button.setText('Light theme' if dark else 'Dark theme')
+        self.zoom_label.setText(f'{round(scale * 100)}%')
+        self.progress.setFixedWidth(px(170))
+        self.progress.setFixedHeight(px(9))
+        self.sidebar.setFixedWidth(px(194))
+        for button in self.nav_buttons:
+            button.setMinimumHeight(px(40))
+        for button in getattr(self, 'mode_buttons', []):
+            button.setMinimumHeight(px(38))
+        if hasattr(self, 'generate_button'):
+            self.generate_button.setMinimumHeight(px(39))
         self.setStyleSheet(f'''
-            QWidget {{ background: {bg}; color: {fg}; font-family: "Segoe UI", "Arial"; font-size: 12px; }}
+            QWidget {{ background: {bg}; color: {fg}; font-family: "Segoe UI", "Arial"; font-size: {px(12)}px; }}
             QFrame#header {{ background: {surface}; border-bottom: 1px solid {border}; }}
             QFrame#sidebar {{ background: {sidebar}; border-right: 1px solid {border}; }}
             QFrame#footer {{ background: {surface}; border-top: 1px solid {border}; }}
             QFrame#panel {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
             QFrame#pickerCard {{ background: {sidebar}; border: 1px solid {border}; border-radius: 8px; }}
             QLabel {{ background: transparent; }}
-            QLabel#appTitle {{ font-size: 18px; font-weight: 700; }}
-            QLabel#pageTitle {{ font-size: 20px; font-weight: 700; }}
-            QLabel#sectionTitle {{ font-size: 11px; font-weight: 700; letter-spacing: 1px; color: {muted}; }}
-            QLabel#muted {{ color: {muted}; font-size: 11px; }}
+            QLabel#appTitle {{ font-size: {px(18)}px; font-weight: 700; }}
+            QLabel#pageTitle {{ font-size: {px(20)}px; font-weight: 700; }}
+            QLabel#sectionTitle {{ font-size: {px(11)}px; font-weight: 700; letter-spacing: {px(1)}px; color: {muted}; }}
+            QLabel#muted {{ color: {muted}; font-size: {px(11)}px; }}
             QPushButton {{ background: {surface}; border: 1px solid {border}; border-radius: 6px;
-                          padding: 8px 11px; font-weight: 500; }}
+                          padding: {px(8)}px {px(11)}px; font-weight: 500; }}
             QPushButton:hover {{ background: {hover}; border-color: #3b82f6; }}
             QPushButton:focus {{ border: 2px solid #60a5fa; }}
             QPushButton:disabled {{ color: {muted}; border-color: {border}; }}
             QPushButton#primaryButton {{ background: #2563eb; color: white; border-color: #2563eb; font-weight: 700; }}
             QPushButton#primaryButton:hover {{ background: #1d4ed8; }}
-            QPushButton#navButton {{ background: transparent; text-align: left; border: none; padding: 10px 13px; }}
+            QPushButton#navButton {{ background: transparent; text-align: left; border: none; padding: {px(10)}px {px(13)}px; }}
             QPushButton#navButton:hover {{ background: {hover}; }}
             QPushButton#navButton:checked {{ background: #2563eb; color: white; }}
-            QPushButton#modeButton {{ padding: 7px 5px; }}
+            QPushButton#modeButton {{ padding: {px(7)}px {px(5)}px; }}
             QPushButton#modeButton:checked {{ background: #2563eb; color: white; border-color: #2563eb; }}
+            QPushButton#zoomButton {{ padding: {px(5)}px {px(8)}px; min-width: {px(24)}px; }}
             QLineEdit, QPlainTextEdit, QComboBox, QTableWidget {{
                 background: {field}; color: {fg}; border: 1px solid {border}; border-radius: 6px;
-                selection-background-color: #2563eb; selection-color: white; padding: 5px;
+                selection-background-color: #2563eb; selection-color: white; padding: {px(5)}px;
             }}
-            QPlainTextEdit#codeArea {{ font-family: Consolas, "Cascadia Code", monospace; font-size: 12px; }}
+            QPlainTextEdit#codeArea {{ font-family: Consolas, "Cascadia Code", monospace; font-size: {px(12)}px; }}
             QTextBrowser#guideBrowser {{ background: {field}; color: {fg}; border: 1px solid {border};
-                                        border-radius: 7px; padding: 10px; selection-background-color: #2563eb;
+                                        border-radius: 7px; padding: {px(10)}px; selection-background-color: #2563eb;
                                         selection-color: white; }}
             QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus, QTableWidget:focus {{ border: 2px solid #60a5fa; }}
             QTableWidget {{ alternate-background-color: {table_alt}; gridline-color: {border}; }}
             QHeaderView::section {{ background: {sidebar}; color: {fg}; border: none;
-                                   border-bottom: 1px solid {border}; padding: 9px 6px; font-weight: 600; }}
+                                   border-bottom: 1px solid {border}; padding: {px(9)}px {px(6)}px; font-weight: 600; }}
             QTableWidget::item:selected {{ background: #2563eb; color: white; }}
             QComboBox::drop-down {{ border: none; width: 28px; background: transparent;
                                     subcontrol-origin: padding; subcontrol-position: right center; }}
@@ -1846,19 +1932,19 @@ class MainWindow(QMainWindow):
             QComboBox QAbstractItemView {{ background: {surface}; color: {fg};
                 border: 1px solid {border}; border-radius: 7px; padding: 5px;
                 outline: none; selection-background-color: #2563eb; selection-color: white; }}
-            QComboBox QAbstractItemView::item {{ min-height: 28px; padding: 5px 10px; border-radius: 4px; }}
+            QComboBox QAbstractItemView::item {{ min-height: {px(28)}px; padding: {px(5)}px {px(10)}px; border-radius: 4px; }}
             QComboBox QAbstractItemView::item:hover {{ background: {hover}; }}
             QToolButton#excludeButton {{ background: {surface}; color: {fg}; border: 1px solid {border};
-                                         border-radius: 6px; padding: 7px 10px; }}
+                                         border-radius: 6px; padding: {px(7)}px {px(10)}px; }}
             QToolButton#excludeButton:hover {{ background: {hover}; border-color: #3b82f6; }}
-            QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; padding: 5px; }}
-            QMenu::item {{ padding: 6px 26px 6px 8px; border-radius: 4px; }}
+            QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; padding: {px(5)}px; }}
+            QMenu::item {{ padding: {px(6)}px {px(26)}px {px(6)}px {px(8)}px; border-radius: 4px; }}
             QMenu::item:selected {{ background: {hover}; }}
             QMenu::indicator {{ width: 14px; height: 14px; }}
-            QCheckBox {{ spacing: 8px; }}
+            QCheckBox {{ spacing: {px(8)}px; }}
             QSplitter::handle {{ background: {border}; }}
-            QSplitter::handle:horizontal {{ width: 5px; }}
-            QSplitter::handle:vertical {{ height: 5px; }}
+            QSplitter::handle:horizontal {{ width: {px(5)}px; }}
+            QSplitter::handle:vertical {{ height: {px(5)}px; }}
             QProgressBar {{ background: {border}; border: none; border-radius: 4px; }}
             QProgressBar::chunk {{ background: #2563eb; border-radius: 4px; }}
             QScrollBar:vertical, QScrollBar:horizontal {{ background: {field}; }}

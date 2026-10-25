@@ -33,6 +33,7 @@ A desktop tool for creating, reviewing, organizing, and exporting CSS and XPath 
 - Audit locator validation and review ranked, unverified fallback suggestions based on the captured page snapshot.
 - Export locator data to CSV and Excel (XLSX).
 - Use the built-in guide for feature descriptions and workflow help.
+- Adapt the workspace navigation and split views to smaller windows, with adjustable UI zoom controls.
 
 ## Requirements
 
