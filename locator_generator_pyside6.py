@@ -92,6 +92,7 @@ class PersistentCheckMenu(QMenu):
         if event.button() == Qt.MouseButton.LeftButton and action and action.isEnabled():
             if action.isCheckable():
                 action.setChecked(not action.isChecked())
+                self.setActiveAction(action)
                 event.accept()
                 return
             if action.text() == 'Clear selections':
@@ -106,6 +107,7 @@ class PersistentCheckMenu(QMenu):
             if action and action.isEnabled():
                 if action.isCheckable():
                     action.setChecked(not action.isChecked())
+                    self.setActiveAction(action)
                     event.accept()
                     return
                 if action.text() == 'Clear selections':
@@ -422,7 +424,7 @@ def test_live_job(url, candidates):
                 results.append((candidate['expr'], matches, None))
             except Exception as exc:
                 results.append((candidate['expr'], None, str(exc).splitlines()[0][:200]))
-        return results
+        return {'results': results, 'url': url}
     finally:
         driver.quit()
 
@@ -817,6 +819,10 @@ class ArrowComboBox(QComboBox):
 
 
 class MainWindow(QMainWindow):
+    job_error = Signal(str)
+    job_finished = Signal()
+    picker_error = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(TITLE + ' | PySide6')
@@ -840,6 +846,9 @@ class MainWindow(QMainWindow):
         self._close_when_idle = False
         self.framework = FRAMEWORKS[0]
         self.nav_buttons = []
+        self.job_error.connect(self.on_job_error)
+        self.job_finished.connect(self.on_job_finished)
+        self.picker_error.connect(self.on_picker_error)
         self._setup_ui()
         self.apply_theme()
         self.switch_workspace(0)
@@ -1103,7 +1112,15 @@ class MainWindow(QMainWindow):
         self.scan_button.setObjectName('primaryButton')
         self.scan_button.clicked.connect(self.scan_whole_page)
         sl.addWidget(self.scan_button)
-        sl.addWidget(label('Counts come from the captured page-source snapshot, not live Selenium checks.', True))
+        scan_summary, scan_summary_layout = panel('SCAN SNAPSHOT')
+        self.scan_summary = label('No page scanned yet.\n\nA scan collects buttons, inputs, links, forms, and elements with test attributes. Results appear in Candidate Locators.', True)
+        self.scan_summary.setWordWrap(True)
+        scan_summary_layout.addWidget(self.scan_summary)
+        scan_summary.setMinimumHeight(155)
+        sl.addWidget(scan_summary, 1)
+        scan_note = label('Snapshot match counts are estimates from captured HTML. Use Test live to verify selectors in the browser.', True)
+        scan_note.setWordWrap(True)
+        sl.addWidget(scan_note)
         sl.addStretch(1)
         self.modes.addWidget(scan)
 
@@ -1124,9 +1141,14 @@ class MainWindow(QMainWindow):
         rl.addWidget(result_desc)
         self.exclusion_actions = []
         self.exclusion_menu = PersistentCheckMenu(self)
-        for title, option_type, value in (
-                [('CSS selectors', 'type', 'CSS'), ('XPath selectors', 'type', 'XPath')] +
-                [(strategy, 'strategy', strategy) for strategy in LOCATOR_STRATEGIES]):
+        self.exclusion_menu.setMinimumWidth(290)
+        type_heading = QAction('LOCATOR TYPES', self.exclusion_menu)
+        type_heading.setEnabled(False)
+        type_font = type_heading.font()
+        type_font.setBold(True)
+        type_heading.setFont(type_font)
+        self.exclusion_menu.addAction(type_heading)
+        for title, option_type, value in [('CSS selectors', 'type', 'CSS'), ('XPath selectors', 'type', 'XPath')]:
             action = QAction(title, self.exclusion_menu)
             action.setCheckable(True)
             action.setData((option_type, value))
@@ -1134,13 +1156,27 @@ class MainWindow(QMainWindow):
             self.exclusion_menu.addAction(action)
             self.exclusion_actions.append((action, option_type, value, title))
         self.exclusion_menu.addSeparator()
+        strategy_heading = QAction('LOCATOR STRATEGIES', self.exclusion_menu)
+        strategy_heading.setEnabled(False)
+        strategy_font = strategy_heading.font()
+        strategy_font.setBold(True)
+        strategy_heading.setFont(strategy_font)
+        self.exclusion_menu.addAction(strategy_heading)
+        for strategy in LOCATOR_STRATEGIES:
+            action = QAction(strategy, self.exclusion_menu)
+            action.setCheckable(True)
+            action.setData(('strategy', strategy))
+            action.toggled.connect(self.update_exclusion_label)
+            self.exclusion_menu.addAction(action)
+            self.exclusion_actions.append((action, 'strategy', strategy, strategy))
+        self.exclusion_menu.addSeparator()
         clear_exclusions_action = QAction('Clear selections', self.exclusion_menu)
         self.exclusion_menu.addAction(clear_exclusions_action)
         self.exclusion_menu.clear_requested.connect(self.clear_exclusions)
         self.exclude_button = QToolButton()
         self.exclude_button.setObjectName('excludeButton')
-        self.exclude_button.setText('Exclude locator types  ▾')
-        self.exclude_button.setToolTip('Choose one or more locator types or strategies to remove from generated results.')
+        self.exclude_button.setText('Ignore patterns  ▾')
+        self.exclude_button.setToolTip('Choose locator types or strategies to omit from the next generated or scanned results. The menu stays open while you choose multiple items.')
         self.exclude_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.exclude_button.setMenu(self.exclusion_menu)
         rl.addWidget(self.exclude_button, 0, Qt.AlignmentFlag.AlignLeft)
@@ -1331,7 +1367,7 @@ class MainWindow(QMainWindow):
  <li><b>Scan Page:</b> Enter a URL to inspect buttons, inputs, links, forms, and elements with test IDs. Scan results come from a page-source snapshot.</li>
  <li><b>Select locators:</b> Tick the checkbox beside each selector, or use <b>Select all generated selectors</b>. Copy, add to Page Objects, send to Health Audit, and Test live use the checked selectors.</li>
  <li><b>Inspect and copy:</b> Select a checked locator to read its strategy, score, stability rank, and match count. Choose a framework to preview or copy its code binding.</li>
- <li><b>Exclude locator types:</b> Choose CSS, XPath, or one or more locator strategies. Your current exclusions stay visible above the results and are applied to both HTML generation and page scans.</li>
+ <li><b>Ignore patterns:</b> Choose CSS, XPath, or one or more locator strategies. The grouped checklist stays open while you choose multiple items; active exclusions remain visible above the results and apply to HTML generation and page scans.</li>
 </ul>
 <p><i>Fragment and scan counts are calculated from captured HTML. They do not prove that a selector works on the live page.</i></p>
 <hr>
@@ -1413,7 +1449,7 @@ class MainWindow(QMainWindow):
         selected = [title for action, _kind, _value, title in self.exclusion_actions
                     if action.isChecked()]
         count = len(selected)
-        label_text = f'Exclude locator types ({count})' if count else 'Exclude locator types'
+        label_text = f'Ignore patterns ({count})' if count else 'Ignore patterns'
         self.exclude_button.setText(label_text + '  ▾')
         self.excluded_summary.setText('Ignored: ' + (', '.join(selected) if selected else 'none'))
 
@@ -1760,9 +1796,8 @@ class MainWindow(QMainWindow):
         self.worker_threads.append(record)
         thread.started.connect(worker.run)
         worker.result.connect(success)
-        worker.error.connect(lambda msg: self.popup('Operation failed', msg))
-        worker.error.connect(lambda msg: self.set_status('Operation failed: ' + msg[:120]))
-        worker.finished.connect(lambda: self.set_busy(False))
+        worker.error.connect(self.job_error)
+        worker.finished.connect(self.job_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
@@ -1789,6 +1824,11 @@ class MainWindow(QMainWindow):
     def populate_scan_results(self, payload):
         self.rows = payload['rows']
         self.count_context = 'Page-source snapshot'
+        self.scan_summary.setText(
+            f'Last scanned page:\n{payload["url"]}\n\n'
+            f'Generated {len(self.rows)} top locator(s). Their match counts come from the captured page source; '
+            'use Test live to verify them against the loaded page.'
+        )
         self.show_candidates(f'Scanned {payload["url"]} · {len(self.rows)} top locators')
 
     def test_live_url(self):
@@ -1810,11 +1850,13 @@ class MainWindow(QMainWindow):
         selected = [candidate.copy() for candidate in candidates]
         self.launch_job(
             lambda: test_live_job(url, selected),
-            lambda results: self.show_live_test_results(results, url),
+            self.show_live_test_results,
             f'Testing {len(selected)} selected locator(s) against live URL…',
         )
 
-    def show_live_test_results(self, results, url):
+    def show_live_test_results(self, payload):
+        results = payload['results']
+        url = payload['url']
         found = sum(matches is not None and matches > 0 for _, matches, error in results if error is None)
         no_matches = sum(matches == 0 for _, matches, error in results if error is None)
         errors = sum(error is not None for _, _, error in results)
@@ -1833,6 +1875,17 @@ class MainWindow(QMainWindow):
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.exec()
         self.set_status(f'Live locator test finished: {found} found, {no_matches} with no matches, {errors} errors.')
+
+    def on_job_error(self, message):
+        self.popup('Operation failed', message)
+        self.set_status('Operation failed: ' + message[:120])
+
+    def on_job_finished(self):
+        self.set_busy(False)
+
+    def on_picker_error(self, message):
+        self.popup('Picker error', message)
+        self.set_status('Picker error: ' + message[:120])
 
     def run_health_audit_and_heal(self):
         if not HAS_SELENIUM:
@@ -1878,8 +1931,7 @@ class MainWindow(QMainWindow):
         self.picker_worker.opened.connect(self.on_picker_open)
         self.picker_worker.picked.connect(self.on_element_picked)
         self.picker_worker.navigated.connect(self.on_picker_navigated)
-        self.picker_worker.error.connect(lambda msg: self.popup('Picker error', msg))
-        self.picker_worker.error.connect(lambda msg: self.set_status('Picker error: ' + msg[:120]))
+        self.picker_worker.error.connect(self.picker_error)
         self.picker_worker.finished.connect(self.on_picker_closed)
         self.picker_worker.finished.connect(self.picker_thread.quit)
         self.picker_worker.finished.connect(self.picker_worker.deleteLater)
@@ -2015,6 +2067,8 @@ class MainWindow(QMainWindow):
             QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; padding: {px(5)}px; }}
             QMenu::item {{ padding: {px(6)}px {px(26)}px {px(6)}px {px(8)}px; border-radius: 4px; }}
             QMenu::item:selected {{ background: {hover}; }}
+            QMenu::item:disabled {{ color: {muted}; padding-top: {px(8)}px; padding-bottom: {px(4)}px; }}
+            QMenu::separator {{ height: 1px; background: {border}; margin: {px(4)}px {px(6)}px; }}
             QMenu::indicator {{ width: 14px; height: 14px; }}
             QCheckBox {{ spacing: {px(8)}px; }}
             QSplitter::handle {{ background: {border}; }}
