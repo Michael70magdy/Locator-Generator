@@ -30,9 +30,11 @@ try:
 except ImportError:
     BeautifulSoup = None
 try:
-    from selenium import webdriver
     from selenium.webdriver.common.by import By as SelBy
     from selenium.webdriver.chrome.options import Options as ChromeOptions
+    from selenium.webdriver.chrome.webdriver import WebDriver as ChromeWebDriver
+    from selenium.webdriver.edge.options import Options as EdgeOptions
+    from selenium.webdriver.edge.webdriver import WebDriver as EdgeWebDriver
     HAS_SELENIUM = True
 except ImportError:
     HAS_SELENIUM = False
@@ -325,7 +327,37 @@ def selenium_driver(headless=True):
     options = ChromeOptions()
     if headless:
         options.add_argument('--headless=new')
-    return webdriver.Chrome(options=options)
+    return ChromeWebDriver(options=options)
+
+
+def _driver_error_summary(error):
+    lines = [line.strip() for line in str(error).splitlines() if line.strip()]
+    return ' '.join(lines[:3])[:420] or type(error).__name__
+
+
+def selenium_picker_driver():
+    """Start Chrome for picking, falling back to the built-in Windows Edge."""
+    if not HAS_SELENIUM:
+        raise RuntimeError('The browser picker needs Selenium, which is missing from this build.')
+
+    errors = []
+    for browser_name, driver_class, options_class in (
+            ('Google Chrome', ChromeWebDriver, ChromeOptions),
+            ('Microsoft Edge', EdgeWebDriver, EdgeOptions)):
+        options = options_class()
+        options.add_argument('--no-first-run')
+        options.add_argument('--no-default-browser-check')
+        try:
+            return driver_class(options=options), browser_name
+        except Exception as exc:
+            errors.append(f'{browser_name}: {_driver_error_summary(exc)}')
+
+    detail = '\n'.join(errors)
+    raise RuntimeError(
+        'The picker could not start a supported browser. Install or repair Google Chrome or Microsoft Edge, '
+        'then try again. Selenium Manager may need an internet connection to download the matching browser driver.\n\n'
+        + detail
+    )
 
 
 def validate_http_url(value):
@@ -633,7 +665,7 @@ class PickerWorker(QObject):
     navigated = Signal(str)
     error = Signal(str)
     finished = Signal()
-    opened = Signal()
+    opened = Signal(str)
 
     def __init__(self, url, commands, enabled):
         super().__init__()
@@ -644,9 +676,9 @@ class PickerWorker(QObject):
     def run(self):
         driver = None
         try:
-            driver = selenium_driver(headless=False)
+            driver, browser_name = selenium_picker_driver()
             driver.get(self.url)
-            self.opened.emit()
+            self.opened.emit(browser_name)
             last_url = None
             running = True
             while running:
@@ -684,7 +716,7 @@ class PickerWorker(QObject):
                 'max retries exceeded', 'connection refused', 'failed to establish a new connection',
             ))
             if not closed_browser:
-                self.error.emit(message)
+                self.error.emit(_driver_error_summary(exc) if not isinstance(exc, RuntimeError) else message)
         finally:
             if driver:
                 try: driver.quit()
@@ -1003,7 +1035,7 @@ class MainWindow(QMainWindow):
         pl.setContentsMargins(10, 8, 10, 8)
         pl.setSpacing(7)
         pl.addWidget(label('OR PICK FROM A BROWSER', True))
-        pl.addWidget(label('Open Chrome, hover over an element, and click it to capture its HTML.', True))
+        pl.addWidget(label('Open Chrome or Microsoft Edge, hover over an element, and click it to capture its HTML.', True))
         self.url_entry = QLineEdit('https://example.com')
         self.url_entry.setPlaceholderText('https://page-to-pick-from.example')
         pl.addWidget(self.url_entry)
@@ -1011,7 +1043,7 @@ class MainWindow(QMainWindow):
         pick_actions = QHBoxLayout()
         self.pick_button = QPushButton('Open picker')
         self.pick_button.setObjectName('primaryButton')
-        self.pick_button.setToolTip('Launch Chrome with the locator picker enabled.')
+        self.pick_button.setToolTip('Launch Chrome or fall back to Microsoft Edge for the locator picker.')
         self.pick_button.clicked.connect(self.pick_element_interactive)
         pick_actions.addWidget(self.pick_button)
         self.close_picker_button = QPushButton('Close browser')
@@ -1312,7 +1344,7 @@ class MainWindow(QMainWindow):
  <li><b>Ctrl+1 … Ctrl+4:</b> Switch between Generate Locators, Page Objects, Health Audit, and Help.</li>
  <li><b>Zoom:</b> Use the A− and A+ buttons or Ctrl+- / Ctrl++ to resize the interface; Ctrl+0 restores 100%. Split views and navigation adapt to narrower windows.</li>
  <li><b>Tab / Shift+Tab:</b> Move between controls.</li>
- <li><b>PySide6:</b> Required for the desktop app. <b>BeautifulSoup:</b> Required for HTML parsing. <b>Selenium and Chrome:</b> Required for the picker and live browser features. <b>openpyxl:</b> Required for Excel export; CSV works without it. <b>lxml:</b> Improves XPath match counts.</li>
+ <li><b>PySide6:</b> Required for the desktop app. <b>BeautifulSoup:</b> Required for HTML parsing. <b>Selenium and Chrome or Edge:</b> Required for the picker and live browser features; Selenium Manager may need internet access to set up the matching driver. <b>openpyxl:</b> Required for Excel export; CSV works without it. <b>lxml:</b> Improves XPath match counts.</li>
 </ul>
 <p><i>Scores and fallback rankings are heuristics, not guarantees. Some framework snippets may need project-specific imports or syntax adjustments.</i></p>
 </body></html>
@@ -1811,16 +1843,16 @@ class MainWindow(QMainWindow):
         self.picker_thread.finished.connect(self.picker_thread.deleteLater)
         self.picker_thread.finished.connect(self.reset_picker_refs)
         self.pick_button.setEnabled(False)
-        self.set_status('Opening Chrome picker…')
+        self.set_status('Opening browser picker…')
         self.picker_thread.start()
 
-    def on_picker_open(self):
+    def on_picker_open(self, browser_name='Google Chrome'):
         self.picker_open = True
         self.close_picker_button.setEnabled(True)
         self.pick_mode.setEnabled(True)
         for button in (self.nav_back, self.nav_forward, self.nav_refresh):
             button.setEnabled(True)
-        self.set_status('Chrome picker ready. Click a page element to capture it.')
+        self.set_status(f'{browser_name} picker ready. Click a page element to capture it.')
 
     def on_picker_navigated(self, url):
         self.url_entry.setText(url)

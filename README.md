@@ -44,7 +44,7 @@ A desktop tool for creating, reviewing, organizing, and exporting CSS and XPath 
 
 ## Standalone Windows executable
 
-Download [Locator Generator.exe](https://github.com/Michael70magdy/Locator-Generator/raw/refs/heads/main/Locator%20Generator.exe) and double-click it on 64-bit Windows. It bundles Python and the app's required Python packages, so a separate Python or PySide6 installation is not needed. Google Chrome is still required for browser picking, live page scans, and Health Audit.
+Download [Locator Generator.exe](https://github.com/Michael70magdy/Locator-Generator/raw/refs/heads/main/Locator%20Generator.exe) and double-click it on 64-bit Windows. It bundles Python and the app's required Python packages, so a separate Python or PySide6 installation is not needed. Browser picking, live page scans, and Health Audit require Google Chrome or Microsoft Edge; Selenium Manager may need an internet connection to obtain the matching driver.
 
 ## Install
 
