@@ -324,10 +324,7 @@ def generate_pom_code(elements, class_name, framework):
 def selenium_driver(headless=True):
     if not HAS_SELENIUM:
         raise RuntimeError('Selenium is not installed. Run: pip install selenium')
-    options = ChromeOptions()
-    if headless:
-        options.add_argument('--headless=new')
-    return ChromeWebDriver(options=options)
+    return _start_supported_browser(headless=headless)[0]
 
 
 def _driver_error_summary(error):
@@ -335,10 +332,10 @@ def _driver_error_summary(error):
     return ' '.join(lines[:3])[:420] or type(error).__name__
 
 
-def selenium_picker_driver():
-    """Start Chrome for picking, falling back to the built-in Windows Edge."""
+def _start_supported_browser(headless):
+    """Start Chrome, falling back to Microsoft Edge if Chrome is unavailable."""
     if not HAS_SELENIUM:
-        raise RuntimeError('The browser picker needs Selenium, which is missing from this build.')
+        raise RuntimeError('Selenium is missing from this build.')
 
     errors = []
     for browser_name, driver_class, options_class in (
@@ -347,6 +344,8 @@ def selenium_picker_driver():
         options = options_class()
         options.add_argument('--no-first-run')
         options.add_argument('--no-default-browser-check')
+        if headless:
+            options.add_argument('--headless=new')
         try:
             return driver_class(options=options), browser_name
         except Exception as exc:
@@ -354,10 +353,15 @@ def selenium_picker_driver():
 
     detail = '\n'.join(errors)
     raise RuntimeError(
-        'The picker could not start a supported browser. Install or repair Google Chrome or Microsoft Edge, '
+        'Could not start Google Chrome or Microsoft Edge. Install or repair one of these browsers, '
         'then try again. Selenium Manager may need an internet connection to download the matching browser driver.\n\n'
         + detail
     )
+
+
+def selenium_picker_driver():
+    """Open the preferred interactive browser for the element picker."""
+    return _start_supported_browser(headless=False)
 
 
 def validate_http_url(value):
@@ -578,13 +582,21 @@ def extract_audit_locators(source):
     extracted = []
     for raw_line in source.splitlines():
         line = raw_line.strip().rstrip(';').strip()
-        if not line or line.startswith(('//', '#')):
+        if not line or line == '//' or line.startswith(('// ', '//\t', '# ', '#\t')):
             continue
 
         # Java: By.variable = By.id("..."); Python calls/tuples: By.ID, "..."
         by_call = re.search(r'By\.(xpath|cssSelector|id|name|className|tagName|linkText|partialLinkText)\s*\(\s*((?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'))\s*\)', line, re.I)
         if by_call:
-            strategy = {'cssselector': 'CSS_SELECTOR'}.get(by_call.group(1).lower(), by_call.group(1))
+            # Java Selenium uses camelCase names, while normalize() expects
+            # Selenium's underscore-separated strategy constants.
+            strategy = {
+                'cssselector': 'CSS_SELECTOR',
+                'classname': 'CLASS_NAME',
+                'tagname': 'TAG_NAME',
+                'linktext': 'LINK_TEXT',
+                'partiallinktext': 'PARTIAL_LINK_TEXT',
+            }.get(by_call.group(1).lower(), by_call.group(1))
             extracted.append(normalize(strategy, decode(by_call.group(2))))
             continue
 
