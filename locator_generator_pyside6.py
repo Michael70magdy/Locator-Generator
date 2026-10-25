@@ -409,13 +409,20 @@ def scan_page_job(url, excluded_types=(), excluded_strategies=()):
         driver.quit()
 
 
-def test_live_job(url, candidate):
+def test_live_job(url, candidates):
     url = validate_http_url(url)
     driver = selenium_driver()
     try:
         driver.get(url)
-        by = SelBy.XPATH if candidate['kind'] == 'XPath' else SelBy.CSS_SELECTOR
-        return len(driver.find_elements(by, candidate['expr']))
+        results = []
+        for candidate in candidates:
+            by = SelBy.XPATH if candidate['kind'] == 'XPath' else SelBy.CSS_SELECTOR
+            try:
+                matches = len(driver.find_elements(by, candidate['expr']))
+                results.append((candidate['expr'], matches, None))
+            except Exception as exc:
+                results.append((candidate['expr'], None, str(exc).splitlines()[0][:200]))
+        return results
     finally:
         driver.quit()
 
@@ -941,8 +948,9 @@ class MainWindow(QMainWindow):
         zoom_reset.activated.connect(self.reset_zoom)
         self.shortcuts.extend((zoom_in, zoom_out, zoom_reset))
 
-    def register_responsive_splitter(self, splitter, breakpoint=1080):
+    def register_responsive_splitter(self, splitter, breakpoint=1080, ratio=0.44):
         splitter.setChildrenCollapsible(False)
+        splitter.setProperty('firstPaneRatio', ratio)
         self._responsive_splitters.append((splitter, breakpoint))
 
     def change_zoom(self, delta):
@@ -972,7 +980,8 @@ class MainWindow(QMainWindow):
             if splitter.orientation() != wanted:
                 splitter.setOrientation(wanted)
                 extent = splitter.height() if wanted == Qt.Orientation.Vertical else splitter.width()
-                splitter.setSizes([max(1, round(extent * 0.44)), max(1, round(extent * 0.56))])
+                ratio = float(splitter.property('firstPaneRatio') or 0.44)
+                splitter.setSizes([max(1, round(extent * ratio)), max(1, round(extent * (1 - ratio)))])
 
     def workspace(self, title, subtitle):
         container = QWidget()
@@ -989,11 +998,11 @@ class MainWindow(QMainWindow):
     def build_generate_workspace(self):
         outer = self.workspace('Generate Locators', 'Choose an input mode, generate ranked selectors, then export or reuse them.')
         primary_split = QSplitter(Qt.Orientation.Horizontal)
-        self.register_responsive_splitter(primary_split, 1220)
+        self.register_responsive_splitter(primary_split, 1220, ratio=0.30)
         outer.addWidget(primary_split, 1)
 
         input_panel, il = panel('INPUT')
-        input_panel.setMinimumWidth(240)
+        input_panel.setMinimumWidth(210)
         primary_split.addWidget(input_panel)
         self.mode_buttons = []
         modebar = QHBoxLayout()
@@ -1107,7 +1116,7 @@ class MainWindow(QMainWindow):
         right = QSplitter(Qt.Orientation.Vertical)
         right.setChildrenCollapsible(False)
         primary_split.addWidget(right)
-        primary_split.setSizes([395, 790])
+        primary_split.setSizes([300, 885])
 
         results_panel, rl = panel('CANDIDATE LOCATORS')
         result_desc = label('Fragment matches are calculated from supplied HTML, or from the scanned DOM snapshot.', True)
@@ -1172,7 +1181,7 @@ class MainWindow(QMainWindow):
         right.addWidget(results_panel)
 
         lower_split = QSplitter(Qt.Orientation.Horizontal)
-        self.register_responsive_splitter(lower_split, 900)
+        self.register_responsive_splitter(lower_split, 900, ratio=0.34)
         notes_panel, nl = panel('SELECTED LOCATOR')
         self.selected_note = QPlainTextEdit()
         self.selected_note.setReadOnly(True)
@@ -1196,9 +1205,9 @@ class MainWindow(QMainWindow):
         self.code_preview.setPlaceholderText('Select one or more rows to preview framework bindings.')
         cl.addWidget(self.code_preview, 1)
         lower_split.addWidget(code_panel)
-        lower_split.setSizes([300, 530])
+        lower_split.setSizes([285, 545])
         right.addWidget(lower_split)
-        right.setSizes([390, 210])
+        right.setSizes([480, 300])
         self.switch_mode(0)
 
     def build_pom_workspace(self):
@@ -1788,7 +1797,7 @@ class MainWindow(QMainWindow):
             return
         candidates = self.selected_candidates()
         if not candidates:
-            self.set_status('Select a locator to test against a live URL.')
+            self.popup('Select locators', 'Check one or more locator rows before running a live test.')
             return
         try:
             url = validate_http_url(self.live_test_url.text())
@@ -1798,10 +1807,32 @@ class MainWindow(QMainWindow):
         if not url:
             self.set_status('Enter a target URL in the browser picker or Scan Page.')
             return
-        c = candidates[0].copy()
-        self.launch_job(lambda: test_live_job(url, c),
-                        lambda count: self.set_status(f'Live Selenium test: {count} match(es) for {c["expr"]} on {url}.'),
-                        'Testing selected selector against live URL…')
+        selected = [candidate.copy() for candidate in candidates]
+        self.launch_job(
+            lambda: test_live_job(url, selected),
+            lambda results: self.show_live_test_results(results, url),
+            f'Testing {len(selected)} selected locator(s) against live URL…',
+        )
+
+    def show_live_test_results(self, results, url):
+        found = sum(matches is not None and matches > 0 for _, matches, error in results if error is None)
+        no_matches = sum(matches == 0 for _, matches, error in results if error is None)
+        errors = sum(error is not None for _, _, error in results)
+        summary = (f'Live test complete for {len(results)} locator(s).\n'
+                   f'Found: {found}   |   No matches: {no_matches}   |   Errors: {errors}')
+        lines = []
+        for expr, matches, error in results:
+            state = f'{matches} match(es)' if error is None else f'Evaluation error: {error}'
+            lines.append(f'{expr}\n  {state}')
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information if errors == 0 else QMessageBox.Icon.Warning)
+        dialog.setWindowTitle('Live locator test results')
+        dialog.setText(summary)
+        dialog.setInformativeText(url)
+        dialog.setDetailedText('\n\n'.join(lines))
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
+        self.set_status(f'Live locator test finished: {found} found, {no_matches} with no matches, {errors} errors.')
 
     def run_health_audit_and_heal(self):
         if not HAS_SELENIUM:
