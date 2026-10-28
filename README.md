@@ -37,7 +37,7 @@ Locator Generator is a Windows desktop tool for creating, selecting, checking, a
 
 ## Download the standalone Windows app
 
-[Download the latest Windows build](https://github.com/Michael70magdy/Locator-Generator/raw/refs/heads/main/latest%20build/locator_generator_pyside6.exe) from `latest build/locator_generator_pyside6.exe`.
+[Download the latest Windows build](https://media.githubusercontent.com/media/Michael70magdy/Locator-Generator/main/latest%20build/locator_generator_pyside6.exe?download=1) from `latest build/locator_generator_pyside6.exe`.
 
 The bundled executable includes Python and the app’s runtime dependencies; a separate Python or PySide6 installation is not required. It is built for 64-bit Windows. Live browser validation and Selenium-based workflows require a supported browser such as Chrome or Edge; Selenium Manager may need an internet connection to obtain a matching driver.
 
@@ -80,3 +80,4 @@ Locator score and stability labels are heuristics. Always confirm selectors in t
 ## Feedback
 
 When reporting a bug, include your Windows version, whether you used the EXE or source, the steps to reproduce it, and any error message.
+
