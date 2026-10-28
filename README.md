@@ -1,97 +1,82 @@
 # Locator Generator
 
-A desktop tool for creating, reviewing, organizing, and exporting CSS and XPath selectors for web UI automation. The current application is the PySide6 version in `locator_generator_pyside6.py`.
-
-> `locator_generator.py` is the older Tkinter implementation and is retained as a legacy reference. Run `run_locator_generator.bat` to launch the current PySide6 application.
+Locator Generator is a Windows desktop tool for creating, selecting, checking, and exporting CSS and XPath selectors for web UI automation. It brings an embedded element picker, ranked locator suggestions, framework code previews, Page Object Model support, and live locator audits into one workspace.
 
 ## Screenshots
 
-### Locator generation and selector selection
+### Element Picker and locator selection
 
-![Locator Generator dashboard](screenshots/dashboard.png)
+![Element Picker with captured page and selector tools](screenshots/element-picker.png)
 
-### Page Object Model builder
+### Locator generation and candidate review
+
+![Generated locator candidates](screenshots/dashboard.png)
+
+### Page Objects
 
 ![Page Objects workspace](screenshots/page-objects.png)
 
-### Locator health audit
+### Health Audit
 
 ![Health Audit workspace](screenshots/health-audit.png)
 
-### In-app help guide
+### Built-in guide
 
-![Help guide](screenshots/help-guide.png)
+![Built-in help guide](screenshots/help-guide.png)
 
-## Features
+## Main features
 
-- Generate ranked CSS and XPath candidates from an HTML fragment or a live page.
-- Review each candidate's selector type, strategy, stability rank, score, match count, and notes.
-- Select individual locators with checkboxes or select all generated elements.
-- Pick elements from a browser page and scan a page when Selenium is installed and configured.
-- Preview code bindings for supported automation frameworks using the framework dropdown.
-- Build Page Object Model classes from selected locators, with a custom variable name for each element.
-- Audit locator validation and review ranked, unverified fallback suggestions based on the captured page snapshot.
-- Export locator data to CSV and Excel (XLSX).
-- Use the built-in guide for feature descriptions and workflow help.
-- Adapt the workspace navigation and split views to smaller windows, with adjustable UI zoom controls.
+- Capture elements in the embedded browser, paste HTML, or scan a page.
+- Generate ranked CSS and XPath locator candidates and select individual results or all results.
+- Exclude chosen locator patterns and preview bindings for supported automation frameworks.
+- Review a captured element’s locator bundle, details, and generated code.
+- Copy selectors, test them live, send them to Health Audit, add them to Page Objects, or export CSV/XLSX.
+- Create Page Object classes with a custom variable name for each locator.
+- Validate locators against a live page and inspect suggested alternatives. Snapshot-derived alternatives remain suggestions until tested live.
+- Adjust the workspace for different window sizes and use the zoom controls.
 
-## Requirements
+## Download the standalone Windows app
 
-- Windows
-- Python 3.10 or later
-- PySide6
-- Optional: Selenium and a compatible browser/driver for live page features
+[Download the latest Windows build](https://github.com/Michael70magdy/Locator-Generator/raw/refs/heads/main/latest%20build/locator_generator_pyside6.exe) from `latest build/locator_generator_pyside6.exe`.
 
-## Standalone Windows executable
+The bundled executable includes Python and the app’s runtime dependencies; a separate Python or PySide6 installation is not required. It is built for 64-bit Windows. Live browser validation and Selenium-based workflows require a supported browser such as Chrome or Edge; Selenium Manager may need an internet connection to obtain a matching driver.
 
-Download [Locator Generator.exe](https://github.com/Michael70magdy/Locator-Generator/raw/refs/heads/main/Locator%20Generator.exe) and double-click it on 64-bit Windows. It bundles Python and the app's required Python packages, so a separate Python or PySide6 installation is not needed. Browser picking, live page scans, and Health Audit require Google Chrome or Microsoft Edge; Selenium Manager may need an internet connection to obtain the matching driver.
+## Run from source
 
-## Install
+Requirements: Windows, Python 3.10+, and PySide6. Selenium is needed for Selenium-based live browser workflows.
 
 ```powershell
-py -m pip install PySide6
-```
-
-For live browser features:
-
-```powershell
-py -m pip install selenium
-```
-
-Clone or download this repository, then run from its folder:
-
-```powershell
+py -m pip install PySide6 selenium
 py locator_generator_pyside6.py
 ```
 
-You can also double-click `run_locator_generator.bat` on Windows.
+You can also double-click `run_locator_generator.bat`.
 
 ## Typical workflow
 
-1. Paste an HTML snippet or connect to a page with the live browser tools.
-2. Generate locators and inspect the ranking and match information.
-3. Check the selectors to keep, or use **Select all generated selectors**.
-4. Choose a framework to preview code bindings.
-5. Send selected locators to **Page Objects**, set meaningful variable names, then generate or copy the class.
-6. Use **Health Audit** to validate selectors against the page and consider any suggested alternatives.
-7. Export the reviewed results as CSV or XLSX.
+1. Open **Element Picker**, navigate to a page or paste an HTML element.
+2. Capture or scan the elements you need.
+3. Select one or more captured bundles and review their candidates and code preview.
+4. Choose a framework and adjust ignored locator patterns if needed.
+5. Copy selectors, test live, send selections to Health Audit, add them to Page Objects, or export.
+6. In Page Objects, give each locator a meaningful variable name and generate the class.
 
-## Important notes
-
-Locator scores and stability labels are heuristic guidance, not guarantees. Fallback suggestions are based on the captured page snapshot and are not automatically live-validated. Selenium workflows depend on a working browser and driver. Always validate generated selectors and code in your own test environment.
-
-## Files
+## Project files
 
 | File | Description |
 | --- | --- |
-| `locator_generator_pyside6.py` | Current PySide6 application |
-| `Locator Generator.exe` | Standalone Windows application |
-| `locator_generator.py` | Older Tkinter implementation kept as a reference |
-| `run_locator_generator.bat` | Windows launcher |
-| `Locator_Generator_Showcase.pptx` | Existing presentation |
-| `Locator_Generator_Overview.pptx` | App overview presentation |
-| `screenshots/` | Current application screenshots used in this README |
+| `latest build/locator_generator_pyside6.exe` | Current standalone 64-bit Windows build |
+| `locator_generator_pyside6.py` | Current PySide6 app source |
+| `locator_generator.py` | Older Tkinter implementation retained as a reference |
+| `run_locator_generator.bat` | Windows source launcher |
+| `Locator_Generator_Overview.pptx` | Current app overview presentation |
+| `Locator_Generator_Showcase.pptx` | Earlier presentation retained for reference |
+| `screenshots/` | App screenshots used in this README and overview deck |
+
+## Notes
+
+Locator score and stability labels are heuristics. Always confirm selectors in the target application and your own automation environment. Health Audit results describe the page state tested; fallback alternatives derived from a snapshot are not live-validated unless explicitly tested.
 
 ## Feedback
 
-When reporting a bug, include your Python version, the steps to reproduce it, and any error message.
+When reporting a bug, include your Windows version, whether you used the EXE or source, the steps to reproduce it, and any error message.

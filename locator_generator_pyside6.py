@@ -1,4 +1,4 @@
-"""Locator Generator — PySide6 desktop edition.
+"""Locator Generator desktop app.
 
 Install: pip install PySide6 beautifulsoup4 selenium openpyxl lxml
 Run:     python locator_generator_pyside6.py
@@ -7,23 +7,28 @@ The locator-generation engine below is preserved from the original Tkinter proje
 """
 import csv
 import ast
-import queue
 import re
 import sys
-import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, QObject, QThread, Signal, QPoint
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPolygon, QPalette, QAction
+from PySide6.QtCore import Qt, QObject, QThread, Signal, QPoint, QTimer, QUrl
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPainter, QPolygon, QPalette, QAction, QCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-    QVBoxLayout, QHBoxLayout, QLineEdit, QPlainTextEdit,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QPlainTextEdit,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
     QSplitter, QStackedWidget, QComboBox, QCheckBox, QToolButton, QMenu,
     QProgressBar, QFileDialog, QMessageBox, QGroupBox, QScrollArea,
-    QSizePolicy, QTextBrowser
+    QSizePolicy, QTextBrowser, QTreeWidget, QTreeWidgetItem, QTabWidget
 )
+
+try:
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    HAS_WEBENGINE = True
+except ImportError:
+    QWebEngineView = None
+    HAS_WEBENGINE = False
 
 try:
     from bs4 import BeautifulSoup
@@ -369,11 +374,6 @@ def _start_supported_browser(headless):
     )
 
 
-def selenium_picker_driver():
-    """Open the preferred interactive browser for the element picker."""
-    return _start_supported_browser(headless=False)
-
-
 def validate_http_url(value):
     """Return a normalized HTTP(S) URL or raise a readable input error."""
     value = (value or '').strip()
@@ -387,35 +387,38 @@ def validate_http_url(value):
     return value
 
 
-def scan_page_job(url, excluded_types=(), excluded_strategies=()):
+def scan_html_snapshot(markup, url, excluded_types=(), excluded_strategies=()):
     if BeautifulSoup is None:
         raise RuntimeError('BeautifulSoup is not installed.')
+    soup = BeautifulSoup(markup or '', 'html.parser')
+    xpath_root = make_xpath_snapshot(soup)
+    elements = soup.find_all(['input', 'button', 'a', 'select', 'textarea', 'form'])
+    others = soup.find_all(lambda tag: tag.has_attr('id') or tag.has_attr('data-testid') or tag.has_attr('data-qa'))
+    all_elements = list(dict.fromkeys(elements + others))
+    candidates = []
+    seen_locators = set()
+    for element in all_elements[:150]:
+        matches = exclude_locator_candidates(
+            generate_candidates(soup, element, xpath_root),
+            excluded_types, excluded_strategies,
+        )
+        if matches:
+            top = matches[0].copy()
+            locator_key = (top['kind'], top['expr'])
+            if locator_key in seen_locators:
+                continue
+            seen_locators.add(locator_key)
+            top['note'] = f'<{element.name}> | ' + top['note']
+            candidates.append(top)
+    return {'rows': candidates, 'url': url, 'elements': len(all_elements)}
+
+
+def scan_page_job(url, excluded_types=(), excluded_strategies=()):
     url = validate_http_url(url)
     driver = selenium_driver()
     try:
         driver.get(url)
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        xpath_root = make_xpath_snapshot(soup)
-        elements = soup.find_all(['input', 'button', 'a', 'select', 'textarea', 'form'])
-        others = soup.find_all(lambda tag: tag.has_attr('id') or tag.has_attr('data-testid') or tag.has_attr('data-qa'))
-        all_elements = list(dict.fromkeys(elements + others))
-        candidates = []
-        seen_locators = set()
-        for element in all_elements[:150]:
-            matches = exclude_locator_candidates(
-                generate_candidates(soup, element, xpath_root),
-                excluded_types, excluded_strategies,
-            )
-            if matches:
-                top = matches[0].copy()
-                locator_key = (top['kind'], top['expr'])
-                if locator_key in seen_locators:
-                    continue
-                seen_locators.add(locator_key)
-                top['note'] = f'<{element.name}> | ' + top['note']
-                candidates.append(top)
-        # Counts here are DOM snapshot counts, NOT Selenium-verified results.
-        return {'rows': candidates, 'url': url, 'elements': len(all_elements)}
+        return scan_html_snapshot(driver.page_source, url, excluded_types, excluded_strategies)
     finally:
         driver.quit()
 
@@ -683,10 +686,11 @@ if (!window.__locatorPickerInstalled) {
   document.addEventListener('click', function(e) {
     if (!window.__pickerEnabled) return;
     e.preventDefault(); e.stopPropagation();
-    window.__selectedElementHtml = e.target.outerHTML;
+    const target = e.target.closest('button, a, input, select, textarea, label, [role="button"], [role="link"], [data-testid], [data-test], [data-qa]') || e.target;
+    window.__selectedElementHtml = target.outerHTML;
   }, true);
 }
-window.__pickerEnabled = arguments[0];
+window.__pickerEnabled = PICKER_ENABLED;
 """
 
 
@@ -705,70 +709,6 @@ class Worker(QObject):
         except Exception as exc:
             self.error.emit(str(exc))
         finally:
-            self.finished.emit()
-
-
-class PickerWorker(QObject):
-    picked = Signal(str)
-    navigated = Signal(str)
-    error = Signal(str)
-    finished = Signal()
-    opened = Signal(str)
-
-    def __init__(self, url, commands, enabled):
-        super().__init__()
-        self.url = url
-        self.commands = commands
-        self.enabled = enabled
-
-    def run(self):
-        driver = None
-        try:
-            driver, browser_name = selenium_picker_driver()
-            driver.get(self.url)
-            self.opened.emit(browser_name)
-            last_url = None
-            running = True
-            while running:
-                while True:
-                    try:
-                        command, value = self.commands.get_nowait()
-                    except queue.Empty:
-                        break
-                    if command == 'close':
-                        running = False
-                        break
-                    if command == 'enable': self.enabled = bool(value)
-                    elif command == 'goto': driver.get(value)
-                    elif command == 'back': driver.back()
-                    elif command == 'forward': driver.forward()
-                    elif command == 'refresh': driver.refresh()
-                if not running:
-                    break
-                url = driver.current_url
-                if url != last_url:
-                    self.navigated.emit(url)
-                    last_url = url
-                driver.execute_script(PICKER_SCRIPT, self.enabled)
-                selected = driver.execute_script('var x = window.__selectedElementHtml; window.__selectedElementHtml = null; return x;')
-                if selected:
-                    self.picked.emit(selected)
-                time.sleep(0.35)
-        except Exception as exc:
-            message = str(exc)
-            # Closing Chrome by its own window raises a WebDriver session
-            # error on the next poll. Treat that as a normal picker shutdown.
-            closed_browser = any(token in message.lower() for token in (
-                'no such window', 'invalid session id', 'chrome not reachable',
-                'disconnected', 'target window already closed', 'web view not found',
-                'max retries exceeded', 'connection refused', 'failed to establish a new connection',
-            ))
-            if not closed_browser:
-                self.error.emit(_driver_error_summary(exc) if not isinstance(exc, RuntimeError) else message)
-        finally:
-            if driver:
-                try: driver.quit()
-                except Exception: pass
             self.finished.emit()
 
 
@@ -845,14 +785,30 @@ class ArrowComboBox(QComboBox):
         painter.drawPolygon(arrow)
 
 
+class ArrowMenuButton(QToolButton):
+    """Menu button styled with the same single down-arrow as ArrowComboBox."""
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.palette().color(QPalette.ColorRole.ButtonText))
+        center_x = self.width() - 15
+        center_y = self.height() // 2
+        painter.drawPolygon(QPolygon([
+            QPoint(center_x - 4, center_y - 2),
+            QPoint(center_x + 4, center_y - 2),
+            QPoint(center_x, center_y + 3),
+        ]))
+
+
 class MainWindow(QMainWindow):
     job_error = Signal(str)
     job_finished = Signal()
-    picker_error = Signal(str)
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(TITLE + ' | PySide6')
+        self.setWindowTitle(TITLE)
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
         initial_width = min(1440, max(420, available.width() - 32)) if available else 1200
@@ -870,15 +826,24 @@ class MainWindow(QMainWindow):
         self.dark = True
         self.busy = False
         self.worker_threads = []  # Strong references until Qt threads finish
-        self.picker_commands = None
-        self.picker_thread = None
-        self.picker_open = False
+        self._job_success = None
+        self.captured_bundles = []
+        self._pending_capture_ids = []
+        self._active_capture_id = None
+        self._next_capture_id = 1
+        self._next_capture_number = 1
+        self.loaded_bundle_id = None
+        self._picker_poll_in_flight = False
+        self._picker_loaded = False
+        self._picker_page_open = False
+        self._picker_live_results = {}
+        self.picker_poll_timer = None
         self._close_when_idle = False
+        self._workspace_drawer_open = True
         self.framework = FRAMEWORKS[0]
         self.nav_buttons = []
         self.job_error.connect(self.on_job_error)
         self.job_finished.connect(self.on_job_finished)
-        self.picker_error.connect(self.on_picker_error)
         self._setup_ui()
         self.apply_theme()
         self.switch_workspace(0)
@@ -906,7 +871,8 @@ class MainWindow(QMainWindow):
         title_box.addWidget(self.header_subtitle)
         head.addLayout(title_box, 1)
         self.responsive_nav = ArrowComboBox()
-        self.responsive_nav.addItems(['Generate Locators', 'Page Objects', 'Health Audit', 'Help'])
+        workspace_names = ['Element Picker', 'Page Objects', 'Health Audit', 'Help']
+        self.responsive_nav.addItems(workspace_names)
         self.responsive_nav.setMinimumWidth(150)
         self.responsive_nav.currentIndexChanged.connect(self.switch_workspace)
         self.responsive_nav.hide()
@@ -943,7 +909,7 @@ class MainWindow(QMainWindow):
         side.setContentsMargins(12, 20, 12, 16)
         side.setSpacing(7)
         side.addWidget(label('WORKSPACES', True))
-        for i, title in enumerate(['Generate Locators', 'Page Objects', 'Health Audit', 'Help']):
+        for i, title in enumerate(workspace_names):
             b = QPushButton(title)
             b.setObjectName('navButton')
             b.setCheckable(True)
@@ -952,13 +918,21 @@ class MainWindow(QMainWindow):
             self.nav_buttons.append(b)
             side.addWidget(b)
         side.addStretch(1)
-        side.addWidget(label('PySide6 desktop edition', True))
         middle.addWidget(sidebar)
+
+        self.workspace_drawer_button = QToolButton()
+        self.workspace_drawer_button.setObjectName('drawerButton')
+        self.workspace_drawer_button.setFixedWidth(30)
+        self.workspace_drawer_button.setText('◀')
+        self.workspace_drawer_button.setToolTip('Close the workspace drawer.')
+        self.workspace_drawer_button.clicked.connect(self.toggle_workspace_drawer)
+        middle.addWidget(self.workspace_drawer_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.workspaces = QStackedWidget()
         self.workspaces.setObjectName('workspaces')
         middle.addWidget(self.workspaces, 1)
-        self.build_generate_workspace()
+        self.build_exclusion_menu()
+        self.build_picker_workspace()
         self.build_pom_workspace()
         self.build_audit_workspace()
         self.build_help_workspace()
@@ -977,7 +951,7 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.progress)
         root.addWidget(footer)
         self.shortcuts = []
-        for index in range(4):
+        for index in range(len(workspace_names)):
             shortcut = QShortcut(QKeySequence(f'Ctrl+{index + 1}'), self)
             shortcut.activated.connect(lambda index=index: self.switch_workspace(index))
             self.shortcuts.append(shortcut)
@@ -996,12 +970,25 @@ class MainWindow(QMainWindow):
         self._responsive_splitters.append((splitter, breakpoint))
 
     def change_zoom(self, delta):
-        self.ui_scale = min(1.5, max(0.8, round(self.ui_scale + delta, 2)))
+        self.ui_scale = min(1.5, max(0.5, round(self.ui_scale + delta, 2)))
         self.apply_theme()
 
     def reset_zoom(self):
         self.ui_scale = 1.0
         self.apply_theme()
+
+    def toggle_workspace_drawer(self):
+        self._workspace_drawer_open = not self._workspace_drawer_open
+        compact = self.width() < 980 * self.ui_scale
+        if compact:
+            self.responsive_nav.setVisible(self._workspace_drawer_open)
+        else:
+            self.sidebar.setVisible(self._workspace_drawer_open)
+        self.workspace_drawer_button.setText('◀' if self._workspace_drawer_open else '▶')
+        self.workspace_drawer_button.setToolTip(
+            'Close the workspace drawer.' if self._workspace_drawer_open
+            else 'Open the workspace drawer.'
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1010,9 +997,15 @@ class MainWindow(QMainWindow):
         compact = width < 980 * self.ui_scale
         short = height < 660 * self.ui_scale
         if hasattr(self, 'sidebar'):
-            self.sidebar.setVisible(not compact)
+            self.sidebar.setVisible(not compact and self._workspace_drawer_open)
+        if hasattr(self, 'workspace_drawer_button'):
+            self.workspace_drawer_button.setText('◀' if self._workspace_drawer_open else '▶')
+            self.workspace_drawer_button.setToolTip(
+                'Close the workspace drawer.' if self._workspace_drawer_open
+                else 'Open the workspace drawer.'
+            )
         if hasattr(self, 'responsive_nav'):
-            self.responsive_nav.setVisible(compact)
+            self.responsive_nav.setVisible(compact and self._workspace_drawer_open)
             self.responsive_nav.setMinimumWidth(110 if width < 700 * self.ui_scale else 150)
             if compact and self.responsive_nav.currentIndex() != self.workspaces.currentIndex():
                 self.responsive_nav.blockSignals(True)
@@ -1071,19 +1064,19 @@ class MainWindow(QMainWindow):
         self.mode_buttons = []
         modebar = QHBoxLayout()
         modebar.setSpacing(4)
-        for i, text in enumerate(['Paste / Pick', 'Scan Page']):
-            b = QPushButton(text)
-            b.setObjectName('modeButton')
-            b.setMinimumHeight(38)
-            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            b.setToolTip([
-                'Paste HTML or use the browser picker to capture an element.',
+        for i, text in enumerate(['Paste HTML', 'Scan Page']):
+            button = QPushButton(text)
+            button.setObjectName('modeButton')
+            button.setMinimumHeight(38)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setToolTip([
+                'Paste HTML markup to generate selectors for an element.',
                 'Read eligible elements from a live page URL.',
             ][i])
-            b.setCheckable(True)
-            b.clicked.connect(lambda checked=False, index=i: self.switch_mode(index))
-            self.mode_buttons.append(b)
-            modebar.addWidget(b)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, index=i: self.switch_mode(index))
+            self.mode_buttons.append(button)
+            modebar.addWidget(button)
         il.addLayout(modebar)
         self.modes = QStackedWidget()
         il.addWidget(self.modes, 1)
@@ -1115,46 +1108,6 @@ class MainWindow(QMainWindow):
         pv.addLayout(html_actions)
         self.modes.addWidget(paste)
 
-        pick = QFrame()
-        pick.setObjectName('pickerCard')
-        pl = QVBoxLayout(pick)
-        pl.setContentsMargins(10, 8, 10, 8)
-        pl.setSpacing(7)
-        pl.addWidget(label('OR PICK FROM A BROWSER', True))
-        pl.addWidget(label('Open Chrome or Microsoft Edge, hover over an element, and click it to capture its HTML.', True))
-        self.url_entry = QLineEdit('https://example.com')
-        self.url_entry.setPlaceholderText('https://page-to-pick-from.example')
-        pl.addWidget(self.url_entry)
-        self.url_entry.editingFinished.connect(lambda: self.live_test_url.setText(self.url_entry.text().strip()))
-        pick_actions = QHBoxLayout()
-        self.pick_button = QPushButton('Open picker')
-        self.pick_button.setObjectName('primaryButton')
-        self.pick_button.setToolTip('Launch Chrome or fall back to Microsoft Edge for the locator picker.')
-        self.pick_button.clicked.connect(self.pick_element_interactive)
-        pick_actions.addWidget(self.pick_button)
-        self.close_picker_button = QPushButton('Close browser')
-        self.close_picker_button.setToolTip('Shut down the picker browser cleanly.')
-        self.close_picker_button.clicked.connect(self.close_picker_browser)
-        self.close_picker_button.setEnabled(False)
-        pick_actions.addWidget(self.close_picker_button)
-        pl.addLayout(pick_actions)
-        self.pick_mode = QCheckBox('Picking enabled')
-        self.pick_mode.setChecked(True)
-        self.pick_mode.toggled.connect(self.update_pick_mode)
-        self.pick_mode.setEnabled(False)
-        pl.addWidget(self.pick_mode)
-        nav = QHBoxLayout()
-        self.nav_back = QPushButton('Back')
-        self.nav_forward = QPushButton('Forward')
-        self.nav_refresh = QPushButton('Refresh')
-        for btn, name in [(self.nav_back, 'back'), (self.nav_forward, 'forward'), (self.nav_refresh, 'refresh')]:
-            btn.setEnabled(False)
-            btn.clicked.connect(lambda checked=False, command=name: self.picker_command(command))
-            nav.addWidget(btn)
-        pl.addLayout(nav)
-        pl.addWidget(label('The captured element appears in the HTML editor above.', True))
-        pv.addWidget(pick)
-
         scan = QWidget()
         sl = QVBoxLayout(scan)
         sl.setContentsMargins(0, 5, 0, 0)
@@ -1172,7 +1125,7 @@ class MainWindow(QMainWindow):
         self.scan_summary = label('No page scanned yet.\n\nA scan collects buttons, inputs, links, forms, and elements with test attributes. Results appear in Candidate Locators.', True)
         self.scan_summary.setWordWrap(True)
         scan_summary_layout.addWidget(self.scan_summary)
-        scan_summary.setMinimumHeight(155)
+        scan_summary.setMinimumHeight(110)
         sl.addWidget(scan_summary, 1)
         scan_note = label('Snapshot match counts are estimates from captured HTML. Use Test live to verify selectors in the browser.', True)
         scan_note.setWordWrap(True)
@@ -1189,12 +1142,9 @@ class MainWindow(QMainWindow):
         right = QSplitter(Qt.Orientation.Vertical)
         right.setChildrenCollapsible(False)
         primary_split.addWidget(right)
-        primary_split.setSizes([300, 885])
+        primary_split.setSizes([290, 895])
 
         results_panel, rl = panel('CANDIDATE LOCATORS')
-        result_desc = label('Fragment matches are calculated from supplied HTML, or from the scanned DOM snapshot.', True)
-        result_desc.setWordWrap(True)
-        rl.addWidget(result_desc)
         self.exclusion_actions = []
         self.exclusion_menu = PersistentCheckMenu(self)
         self.exclusion_menu.setMinimumWidth(290)
@@ -1229,16 +1179,18 @@ class MainWindow(QMainWindow):
         clear_exclusions_action = QAction('Clear selections', self.exclusion_menu)
         self.exclusion_menu.addAction(clear_exclusions_action)
         self.exclusion_menu.clear_requested.connect(self.clear_exclusions)
-        self.exclude_button = QToolButton()
+        self.exclude_button = ArrowMenuButton()
         self.exclude_button.setObjectName('excludeButton')
-        self.exclude_button.setText('Ignore patterns  ▾')
+        self.exclude_button.setText('Ignore patterns')
         self.exclude_button.setToolTip('Choose locator types or strategies to omit from the next generated or scanned results. The menu stays open while you choose multiple items.')
         self.exclude_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.exclude_button.setMenu(self.exclusion_menu)
-        rl.addWidget(self.exclude_button, 0, Qt.AlignmentFlag.AlignLeft)
+        results_tools = QHBoxLayout()
+        results_tools.addWidget(self.exclude_button)
         self.excluded_summary = label('Ignored: none', True)
         self.excluded_summary.setWordWrap(True)
-        rl.addWidget(self.excluded_summary)
+        results_tools.addWidget(self.excluded_summary, 1)
+        rl.addLayout(results_tools)
         self.results_caption = label('No locators generated yet.', True)
         rl.addWidget(self.results_caption)
         self.tree = table(['Select', 'Selector', 'Type', 'Strategy', 'Score', 'Source matches'], [55, 385, 72, 172, 98, 120])
@@ -1272,14 +1224,15 @@ class MainWindow(QMainWindow):
         rl.addLayout(actions)
         right.addWidget(results_panel)
 
-        lower_split = QSplitter(Qt.Orientation.Horizontal)
-        self.register_responsive_splitter(lower_split, 900, ratio=0.34, vertical_ratio=0.48)
+        lower_split = QTabWidget()
+        lower_split.setDocumentMode(True)
+        self.generate_detail_tabs = lower_split
         notes_panel, nl = panel('SELECTED LOCATOR')
         self.selected_note = QPlainTextEdit()
         self.selected_note.setReadOnly(True)
         self.selected_note.setPlaceholderText('Select a locator to see its stability notes and match scope.')
         nl.addWidget(self.selected_note, 1)
-        lower_split.addWidget(notes_panel)
+        lower_split.addTab(notes_panel, 'Locator Details')
         code_panel, cl = panel('CODE PREVIEW')
         options = QHBoxLayout()
         options.addWidget(label('Framework'))
@@ -1296,11 +1249,310 @@ class MainWindow(QMainWindow):
         self.code_preview.setReadOnly(True)
         self.code_preview.setPlaceholderText('Select one or more rows to preview framework bindings.')
         cl.addWidget(self.code_preview, 1)
-        lower_split.addWidget(code_panel)
-        lower_split.setSizes([285, 545])
+        lower_split.addTab(code_panel, 'Code Preview')
         right.addWidget(lower_split)
-        right.setSizes([480, 300])
+        right.setSizes([570, 210])
         self.switch_mode(0)
+
+    def build_exclusion_menu(self):
+        self.exclusion_actions = []
+        self.exclusion_menu = PersistentCheckMenu(self)
+        self.exclusion_menu.setMinimumWidth(290)
+        type_heading = QAction('LOCATOR TYPES', self.exclusion_menu)
+        type_heading.setEnabled(False)
+        type_font = type_heading.font()
+        type_font.setBold(True)
+        type_heading.setFont(type_font)
+        self.exclusion_menu.addAction(type_heading)
+        for title, option_type, value in [('CSS selectors', 'type', 'CSS'), ('XPath selectors', 'type', 'XPath')]:
+            action = QAction(title, self.exclusion_menu)
+            action.setCheckable(True)
+            action.setData((option_type, value))
+            action.toggled.connect(self.update_exclusion_label)
+            self.exclusion_menu.addAction(action)
+            self.exclusion_actions.append((action, option_type, value, title))
+        self.exclusion_menu.addSeparator()
+        strategy_heading = QAction('LOCATOR STRATEGIES', self.exclusion_menu)
+        strategy_heading.setEnabled(False)
+        strategy_font = strategy_heading.font()
+        strategy_font.setBold(True)
+        strategy_heading.setFont(strategy_font)
+        self.exclusion_menu.addAction(strategy_heading)
+        for strategy in LOCATOR_STRATEGIES:
+            action = QAction(strategy, self.exclusion_menu)
+            action.setCheckable(True)
+            action.setData(('strategy', strategy))
+            action.toggled.connect(self.update_exclusion_label)
+            self.exclusion_menu.addAction(action)
+            self.exclusion_actions.append((action, 'strategy', strategy, strategy))
+        self.exclusion_menu.addSeparator()
+        clear_exclusions_action = QAction('Clear selections', self.exclusion_menu)
+        self.exclusion_menu.addAction(clear_exclusions_action)
+        self.exclusion_menu.clear_requested.connect(self.clear_exclusions)
+
+    def build_picker_workspace(self):
+        outer = self.workspace('Element Picker', 'Browse inside the app, click elements to capture them, and keep each generated locator bundle separate.')
+        toolbar_panel, toolbar_layout = panel('IN-APP BROWSER')
+        bar = QHBoxLayout()
+        self.picker_url_entry = QLineEdit('https://example.com')
+        self.picker_url_entry.setPlaceholderText('Enter a page URL')
+        self.picker_url_entry.returnPressed.connect(self.navigate_picker)
+        bar.addWidget(self.picker_url_entry, 1)
+        self.picker_go_button = QPushButton('Go')
+        self.picker_go_button.setObjectName('primaryButton')
+        self.picker_go_button.clicked.connect(self.navigate_picker)
+        bar.addWidget(self.picker_go_button)
+        self.picker_close_page_button = QPushButton('Close page')
+        self.picker_close_page_button.setToolTip('Close the browser page and give the picker panels more room.')
+        self.picker_close_page_button.setEnabled(False)
+        self.picker_close_page_button.clicked.connect(self.close_picker_page)
+        bar.addWidget(self.picker_close_page_button)
+        self.picker_scan_button = QPushButton('Scan whole page')
+        self.picker_scan_button.setObjectName('primaryButton')
+        self.picker_scan_button.setToolTip('Generate locators for eligible elements across the URL in the picker address bar.')
+        self.picker_scan_button.setEnabled(HAS_SELENIUM or (HAS_WEBENGINE and self._picker_loaded))
+        self.picker_scan_button.clicked.connect(self.scan_picker_whole_page)
+        bar.addWidget(self.picker_scan_button)
+        browser_actions = QHBoxLayout()
+        self.picker_back_button = QPushButton('Back')
+        self.picker_back_button.setEnabled(False)
+        self.picker_back_button.clicked.connect(lambda: self.picker_view.back() if self.picker_view else None)
+        browser_actions.addWidget(self.picker_back_button)
+        self.picker_forward_button = QPushButton('Forward')
+        self.picker_forward_button.setEnabled(False)
+        self.picker_forward_button.clicked.connect(lambda: self.picker_view.forward() if self.picker_view else None)
+        browser_actions.addWidget(self.picker_forward_button)
+        self.picker_reload_button = QPushButton('Reload')
+        self.picker_reload_button.setEnabled(False)
+        self.picker_reload_button.clicked.connect(lambda: self.picker_view.reload() if self.picker_view else None)
+        browser_actions.addWidget(self.picker_reload_button)
+        self.picker_pick_mode = QCheckBox('Click to capture')
+        self.picker_pick_mode.setChecked(True)
+        self.picker_pick_mode.setEnabled(False)
+        self.picker_pick_mode.toggled.connect(self.update_pick_mode)
+        browser_actions.addWidget(self.picker_pick_mode)
+        self.toggle_picker_panels = QToolButton()
+        self.toggle_picker_panels.setText('Hide details  ◀')
+        self.toggle_picker_panels.setToolTip('Collapse or reopen the captured elements, candidate locators, and code preview panel.')
+        self.toggle_picker_panels.setCheckable(True)
+        self.toggle_picker_panels.setChecked(True)
+        self.toggle_picker_panels.toggled.connect(self.toggle_picker_details)
+        browser_actions.addWidget(self.toggle_picker_panels)
+        browser_actions.addStretch(1)
+        toolbar_layout.addLayout(bar)
+        toolbar_layout.addLayout(browser_actions)
+        picker_ignore_row = QHBoxLayout()
+        self.picker_exclude_button = ArrowMenuButton()
+        self.picker_exclude_button.setObjectName('excludeButton')
+        self.picker_exclude_button.setText('Ignore patterns')
+        self.picker_exclude_button.setToolTip('Choose locator types or strategies to omit from future page scans and captured-element generation.')
+        self.picker_exclude_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.picker_exclude_button.setMenu(self.exclusion_menu)
+        picker_ignore_row.addWidget(self.picker_exclude_button)
+        picker_ignore_row.addWidget(label('Framework'))
+        self.picker_framework_combo = ArrowComboBox()
+        self.picker_framework_combo.addItems(FRAMEWORKS)
+        self.picker_framework_combo.setCurrentText(self.framework)
+        self.picker_framework_combo.currentTextChanged.connect(self.change_framework)
+        picker_ignore_row.addWidget(self.picker_framework_combo)
+        self.picker_excluded_summary = label('Ignored: none', True)
+        self.picker_excluded_summary.setWordWrap(True)
+        picker_ignore_row.addWidget(self.picker_excluded_summary, 1)
+        toolbar_layout.addLayout(picker_ignore_row)
+        self.picker_status_label = label(
+            'Website closed. Generate locators from HTML below, or enter a URL and click Go.' if HAS_WEBENGINE else
+            'Embedded browser unavailable; the HTML locator generator below is ready to use.', True)
+        toolbar_layout.addWidget(self.picker_status_label)
+        outer.addWidget(toolbar_panel)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        self.picker_splitter = split
+        self.register_responsive_splitter(split, 1080, ratio=0.56, vertical_ratio=0.58)
+        outer.addWidget(split, 1)
+        browser_panel, browser_layout = panel('PAGE')
+        self.picker_display_title = browser_layout.itemAt(0).widget()
+        self.picker_view = QWebEngineView() if HAS_WEBENGINE else None
+        self.picker_page_stack = QStackedWidget()
+        fallback_page = QWidget()
+        fallback_layout = QVBoxLayout(fallback_page)
+        fallback_layout.setContentsMargins(10, 10, 10, 10)
+        fallback_layout.setSpacing(8)
+        fallback_layout.addWidget(label('Generate locators from pasted HTML', True))
+        self.picker_generator_html = QPlainTextEdit()
+        self.picker_generator_html.setObjectName('codeArea')
+        self.picker_generator_html.setPlaceholderText('Paste an HTML element or fragment here.')
+        self.picker_generator_html.setPlainText(EXAMPLE_HTML)
+        fallback_layout.addWidget(self.picker_generator_html, 1)
+        fallback_actions = QHBoxLayout()
+        self.picker_generate_button = QPushButton('Generate Locators')
+        self.picker_generate_button.setObjectName('primaryButton')
+        self.picker_generate_button.clicked.connect(self.generate_picker_fallback)
+        fallback_actions.addWidget(self.picker_generate_button)
+        picker_example_button = QPushButton('Generate example')
+        picker_example_button.clicked.connect(lambda: self.picker_generator_html.setPlainText(EXAMPLE_HTML))
+        fallback_actions.addWidget(picker_example_button)
+        picker_fallback_copy = QPushButton('Copy selectors')
+        picker_fallback_copy.clicked.connect(self.copy_picker_candidate_selectors)
+        fallback_actions.addWidget(picker_fallback_copy)
+        fallback_layout.addLayout(fallback_actions)
+        self.picker_fallback_page = fallback_page
+        self.picker_page_stack.addWidget(fallback_page)
+        if self.picker_view:
+            self.picker_view.setMinimumSize(280, 190)
+            self.picker_view.urlChanged.connect(self.on_picker_url_changed)
+            self.picker_view.loadFinished.connect(self.on_picker_load_finished)
+            self.picker_page_stack.addWidget(self.picker_view)
+        else:
+            unavailable = label('This build needs the PySide6 Qt WebEngine component for the embedded picker.', True)
+            unavailable.setWordWrap(True)
+            self.picker_page_stack.addWidget(unavailable)
+        browser_layout.addWidget(self.picker_page_stack, 1)
+        split.addWidget(browser_panel)
+        self.picker_browser_panel = browser_panel
+
+        picker_side = QTabWidget()
+        picker_side.setDocumentMode(True)
+        picker_side.setMinimumWidth(300)
+        self.picker_detail_tabs = picker_side
+        self.picker_detail_container = QWidget()
+        picker_detail_layout = QVBoxLayout(self.picker_detail_container)
+        picker_detail_layout.setContentsMargins(0, 0, 0, 0)
+        picker_detail_layout.setSpacing(7)
+        picker_detail_layout.addWidget(picker_side, 1)
+        bundles_panel, bundles_layout = panel('CAPTURED ELEMENT BUNDLES')
+        bundles_help = label('Check one or more captured bundles. Candidates and Code Preview combine the checked bundles and refresh as you select or clear them. Copy all and Copy code use the same checked bundles; expand a bundle to inspect individual selectors.', True)
+        bundles_help.setWordWrap(True)
+        bundles_layout.addWidget(bundles_help)
+        capture_selection_row = QHBoxLayout()
+        capture_selection_row.addWidget(label('Selection mode'))
+        self.capture_selection_mode = ArrowComboBox()
+        self.capture_selection_mode.addItems(['Multiple selection', 'Single selection'])
+        self.capture_selection_mode.currentTextChanged.connect(self.set_capture_selection_mode)
+        capture_selection_row.addWidget(self.capture_selection_mode)
+        self.select_all_captures = QCheckBox('Select all')
+        self.select_all_captures.toggled.connect(self.set_all_captures_checked)
+        capture_selection_row.addWidget(self.select_all_captures)
+        capture_selection_row.addStretch(1)
+        bundles_layout.addLayout(capture_selection_row)
+        self.captured_bundle_list = QTreeWidget()
+        self.captured_bundle_list.setHeaderLabels(['Captured element / locator', 'Type / count', 'Strategy'])
+        self.captured_bundle_list.setRootIsDecorated(True)
+        self.captured_bundle_list.setAlternatingRowColors(True)
+        self.captured_bundle_list.setUniformRowHeights(True)
+        self.captured_bundle_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.captured_bundle_list.setColumnWidth(0, 260)
+        self.captured_bundle_list.setColumnWidth(1, 95)
+        self.captured_bundle_list.currentItemChanged.connect(self.update_open_bundle_button)
+        self.captured_bundle_list.currentItemChanged.connect(self.update_picker_candidate_view)
+        self.captured_bundle_list.itemChanged.connect(self.on_capture_bundle_check_changed)
+        self.captured_bundle_list.itemClicked.connect(self.on_capture_tree_clicked)
+        self.captured_bundle_list.itemDoubleClicked.connect(self.on_capture_tree_double_clicked)
+        bundles_layout.addWidget(self.captured_bundle_list, 1)
+        copy_actions = QHBoxLayout()
+        self.copy_capture_locator_button = QPushButton('Copy one')
+        self.copy_capture_locator_button.setToolTip('Copy the selected locator expression.')
+        self.copy_capture_locator_button.setEnabled(False)
+        self.copy_capture_locator_button.clicked.connect(self.copy_selected_capture_locator)
+        copy_actions.addWidget(self.copy_capture_locator_button)
+        self.copy_capture_bundle_button = QPushButton('Copy all')
+        self.copy_capture_bundle_button.setToolTip('Copy every locator expression from the checked bundles, or the current bundle when none are checked.')
+        self.copy_capture_bundle_button.setEnabled(False)
+        self.copy_capture_bundle_button.clicked.connect(self.copy_capture_bundle_selectors)
+        copy_actions.addWidget(self.copy_capture_bundle_button)
+        self.copy_capture_code_button = QPushButton('Copy code')
+        self.copy_capture_code_button.setToolTip('Copy framework bindings for every locator in the selected bundle.')
+        self.copy_capture_code_button.setEnabled(False)
+        self.copy_capture_code_button.clicked.connect(self.copy_capture_bundle_code)
+        copy_actions.addWidget(self.copy_capture_code_button)
+        bundles_layout.addLayout(copy_actions)
+        bundle_actions = QHBoxLayout()
+        self.open_capture_button = QPushButton('Open locators')
+        self.open_capture_button.setObjectName('primaryButton')
+        self.open_capture_button.setEnabled(False)
+        self.open_capture_button.clicked.connect(self.open_selected_capture)
+        bundle_actions.addWidget(self.open_capture_button)
+        clear_bundles = QPushButton('Clear bundles')
+        clear_bundles.clicked.connect(self.clear_captured_bundles)
+        bundle_actions.addWidget(clear_bundles)
+        bundles_layout.addLayout(bundle_actions)
+        picker_side.addTab(bundles_panel, 'Captured')
+
+        candidate_panel, candidate_layout = panel('CANDIDATE LOCATORS')
+        self.picker_candidates_caption = label('Select one or more captured bundles to view their candidates.', True)
+        candidate_layout.addWidget(self.picker_candidates_caption)
+        picker_selection_row = QHBoxLayout()
+        picker_selection_row.addWidget(label('Selection mode'))
+        self.picker_selection_mode = ArrowComboBox()
+        self.picker_selection_mode.addItems(['Multiple selection', 'Single selection'])
+        self.picker_selection_mode.currentTextChanged.connect(self.set_picker_selection_mode)
+        picker_selection_row.addWidget(self.picker_selection_mode)
+        picker_selection_row.addStretch(1)
+        candidate_layout.addLayout(picker_selection_row)
+        self.picker_candidate_tree = table(['Select', 'Selector', 'Type', 'Strategy', 'Score', 'Matches', 'Captured element'],
+                                           [48, 250, 65, 135, 90, 75, 190])
+        self.picker_candidate_tree.itemChanged.connect(self.on_picker_candidate_changed)
+        self.picker_candidate_tree.itemSelectionChanged.connect(self.update_picker_locator_details)
+        candidate_layout.addWidget(self.picker_candidate_tree, 1)
+        self.picker_candidate_sources = []
+        self.picker_select_all = QCheckBox('Select all locators')
+        self.picker_select_all.toggled.connect(self.set_all_picker_candidates)
+        candidate_layout.addWidget(self.picker_select_all)
+        picker_side.addTab(candidate_panel, 'Candidates')
+
+        picker_code_panel, picker_code_layout = panel('CODE PREVIEW')
+        picker_code_options = QHBoxLayout()
+        picker_code_options.addWidget(label('Selected locator bindings'))
+        picker_code_options.addStretch(1)
+        picker_code_layout.addLayout(picker_code_options)
+        self.picker_code_preview = QPlainTextEdit()
+        self.picker_code_preview.setObjectName('codeArea')
+        self.picker_code_preview.setReadOnly(True)
+        self.picker_code_preview.setPlaceholderText('Select one or more candidate locators to preview framework code.')
+        picker_code_layout.addWidget(self.picker_code_preview, 1)
+        copy_picker_preview = QPushButton('Copy preview code')
+        copy_picker_preview.setObjectName('primaryButton')
+        copy_picker_preview.clicked.connect(self.copy_picker_candidate_code)
+        picker_code_layout.addWidget(copy_picker_preview)
+        picker_side.addTab(picker_code_panel, 'Code Preview')
+
+        locator_details_panel, locator_details_layout = panel('LOCATOR DETAILS')
+        self.picker_locator_details_panel = locator_details_panel
+        self.picker_locator_details = QPlainTextEdit()
+        self.picker_locator_details.setReadOnly(True)
+        self.picker_locator_details.setObjectName('codeArea')
+        self.picker_locator_details.setPlaceholderText('Select a captured element or candidate locator to inspect its details.')
+        locator_details_layout.addWidget(self.picker_locator_details, 1)
+        picker_side.addTab(locator_details_panel, 'Locator Details')
+        self.picker_action_widget = QWidget()
+        picker_action_row = QGridLayout(self.picker_action_widget)
+        self.picker_copy_selectors_button = QPushButton('Copy selectors')
+        self.picker_copy_selectors_button.clicked.connect(self.copy_picker_candidate_selectors)
+        picker_action_row.addWidget(self.picker_copy_selectors_button, 0, 0)
+        picker_add_pom_button = QPushButton('Add to POM')
+        picker_add_pom_button.clicked.connect(self.add_picker_candidates_to_pom)
+        picker_action_row.addWidget(picker_add_pom_button, 0, 1)
+        picker_send_audit_button = QPushButton('Send to Health Audit')
+        picker_send_audit_button.clicked.connect(self.send_picker_candidates_to_audit)
+        picker_action_row.addWidget(picker_send_audit_button, 0, 2)
+        self.picker_test_button = QPushButton('Test live')
+        self.picker_test_button.setEnabled(HAS_SELENIUM)
+        self.picker_test_button.clicked.connect(self.test_picker_candidates_live)
+        picker_action_row.addWidget(self.picker_test_button, 1, 0)
+        self.picker_export_button = QPushButton('Export')
+        self.picker_export_button.clicked.connect(self.export_picker_candidates)
+        picker_action_row.addWidget(self.picker_export_button, 1, 1)
+        picker_copy_code_button = QPushButton('Copy code')
+        picker_copy_code_button.clicked.connect(self.copy_picker_candidate_code)
+        picker_action_row.addWidget(picker_copy_code_button, 1, 2)
+        picker_detail_layout.addWidget(self.picker_action_widget, 0)
+        split.addWidget(self.picker_detail_container)
+        split.setSizes([660, 510])
+
+        if self.picker_view:
+            self.picker_poll_timer = QTimer(self)
+            self.picker_poll_timer.setInterval(250)
+            self.picker_poll_timer.timeout.connect(self.poll_picker_selection)
+        self.picker_page_stack.setCurrentWidget(self.picker_fallback_page)
 
     def build_pom_workspace(self):
         outer = self.workspace('Page Objects', 'Collect selected locators and generate class code using your preferred framework.')
@@ -1327,7 +1579,7 @@ class MainWindow(QMainWindow):
         self.register_responsive_splitter(split, 1180)
         outer.addWidget(split, 1)
         elems, el = panel('SELECTED ELEMENTS')
-        self.pom_count = label('No elements added. Select rows from Generate Locators.', True)
+        self.pom_count = label('No elements added. Select locators from Element Picker.', True)
         el.addWidget(self.pom_count)
         self.pom_tree = table(['Variable', 'Type', 'Selector'], [145, 72, 300])
         self.pom_tree.itemSelectionChanged.connect(self.load_selected_pom_variable)
@@ -1355,6 +1607,26 @@ class MainWindow(QMainWindow):
         split.addWidget(preview_panel)
         split.setSizes([430, 710])
         self.update_pom_code_preview()
+
+    def toggle_picker_details(self, visible):
+        if not hasattr(self, 'picker_detail_container'):
+            return
+        # Hide the complete right pane, including the action bar, so the page
+        # or HTML editor can take over the available splitter space.
+        self.picker_detail_container.setVisible(visible)
+        self.picker_detail_tabs.setVisible(visible)
+        self.picker_action_widget.setVisible(visible)
+        self.toggle_picker_panels.setText('Hide details  ◀' if visible else 'Show details  ▶')
+        extent = (self.picker_splitter.height()
+                  if self.picker_splitter.orientation() == Qt.Orientation.Vertical
+                  else self.picker_splitter.width())
+        if not visible:
+            self.picker_splitter.setSizes([max(1, extent), 0])
+            return
+        first_ratio = (0.58 if self.picker_splitter.orientation() == Qt.Orientation.Horizontal
+                       else 0.50)
+        first = max(1, round(extent * first_ratio))
+        self.picker_splitter.setSizes([first, max(1, extent - first)])
 
     def build_audit_workspace(self):
         outer = self.workspace('Health Audit', 'Check selectors against a live page; review tentative fallback suggestions separately.')
@@ -1413,23 +1685,24 @@ class MainWindow(QMainWindow):
         guide.setHtml('''
 <html><body style="font-family:Segoe UI,Arial,sans-serif; font-size:12pt;">
 <h2 style="color:#3b82f6; margin-bottom:4px;">Start here</h2>
-<p>Paste a small HTML fragment, use the browser picker, or scan a live page. Generate Locators creates ranked CSS and XPath options for the target element.</p>
+<p>Use Element Picker to open an embedded page, capture elements, scan the whole page, or generate ranked CSS and XPath options from pasted HTML.</p>
 <p><b>Install:</b> <code>pip install PySide6 beautifulsoup4 selenium openpyxl lxml</code><br>
 <b>Run:</b> <code>python locator_generator_pyside6.py</code></p>
 <hr>
-<h3 style="color:#3b82f6;">1 · Generate Locators</h3>
+<h3 style="color:#3b82f6;">1 · Element Picker</h3>
 <ul>
- <li><b>Paste / Pick:</b> Paste an element or fragment into the editor, or open the browser picker below it. The app chooses the first element with a useful identifying attribute; if none has one, it uses the final element in the fragment. Picking an element replaces the editor contents and generates its locators.</li>
+ <li><b>Generate from HTML:</b> When the embedded page is closed, paste an element or fragment into the HTML editor. The app chooses a useful target and generates ranked locator candidates.</li>
+ <li><b>Element Picker:</b> Use Go to open the embedded page, or Scan whole page to add page-wide candidates as a bundle. Close page reveals the HTML editor, where you can generate locators, load an example, or copy selectors. Ignore patterns apply to new scans and captured-element generation. Select captured bundles singly or in groups; Candidate Locators and Code Preview update from checked bundles. Clicking a captured bundle or selector does not change the open details tab. The persistent action bar includes Copy selectors, Add to POM, Send to Health Audit, Test live, and Export.</li>
  <li><b>Scan Page:</b> Enter a URL to inspect buttons, inputs, links, forms, and elements with test IDs. Scan results come from a page-source snapshot.</li>
  <li><b>Select locators:</b> Tick the checkbox beside each selector, or use <b>Select all generated selectors</b>. Copy, add to Page Objects, send to Health Audit, and Test live use the checked selectors.</li>
- <li><b>Inspect and copy:</b> Select a checked locator to read its strategy, score, stability rank, and match count. Choose a framework to preview or copy its code binding.</li>
+ <li><b>Inspect and copy:</b> Open Locator Details to read the selected locator's strategy, score, snapshot match count, notes, and framework binding. It says <i>Live test: Not tested yet</i> until you run Test live; afterward it shows the actual match count, no-match result, or evaluation error for the tested URL. Choose a framework beside Ignore patterns to preview or copy its code binding.</li>
  <li><b>Ignore patterns:</b> Choose CSS, XPath, or one or more locator strategies. The grouped checklist stays open while you choose multiple items; active exclusions remain visible above the results and apply to HTML generation and page scans.</li>
 </ul>
 <p><i>Fragment and scan counts are calculated from captured HTML. They do not prove that a selector works on the live page.</i></p>
 <hr>
 <h3 style="color:#3b82f6;">2 · Page Objects</h3>
 <ul>
- <li>Check locators on the Generate Locators page, then choose <b>Add to Page Objects</b>. Duplicate expressions are skipped and new variable names are made unique automatically.</li>
+ <li>Check locators in Element Picker, then choose <b>Add to POM</b>. Duplicate expressions are skipped and new variable names are made unique automatically.</li>
  <li>On the Page Objects page, select one element, enter a variable name, and click <b>Set name</b> (or press Enter). Names must start with a letter or underscore and contain only letters, digits, or underscores; names already in use are rejected.</li>
  <li>Edit the class name to refresh the code. The framework selector is a bordered dropdown with an arrow; changing it updates both code previews.</li>
  <li>Use <b>Clear elements</b> to empty the Page Object list, or <b>Copy POM class code</b> to copy the generated class.</li>
@@ -1454,10 +1727,11 @@ class MainWindow(QMainWindow):
 <p>The framework dropdown supports <b>Java Selenium</b>, <b>Python Selenium</b>, <b>Playwright</b>, and <b>Cypress</b>. Use the header button to switch between dark and light app themes. The Help page follows the active app theme.</p>
 <h3 style="color:#3b82f6;">Keyboard and dependencies</h3>
 <ul>
- <li><b>Ctrl+1 … Ctrl+4:</b> Switch between Generate Locators, Page Objects, Health Audit, and Help.</li>
+ <li>Use the header menu button to open or close the workspace drawer and give the active page more room.</li>
+ <li><b>Ctrl+1 … Ctrl+4:</b> Switch between Element Picker, Page Objects, Health Audit, and Help. Zoom can go down to 50% and up to 150%.</li>
  <li><b>Zoom:</b> Use the A− and A+ buttons or Ctrl+- / Ctrl++ to resize the interface; Ctrl+0 restores 100%. Split views and navigation adapt to narrower windows.</li>
  <li><b>Tab / Shift+Tab:</b> Move between controls.</li>
- <li><b>PySide6:</b> Required for the desktop app. <b>BeautifulSoup:</b> Required for HTML parsing. <b>Selenium and Chrome or Edge:</b> Required for the picker and live browser features; Selenium Manager may need internet access to set up the matching driver. <b>openpyxl:</b> Required for Excel export; CSV works without it. <b>lxml:</b> Improves XPath match counts.</li>
+ <li><b>PySide6 with Qt WebEngine:</b> Required for the desktop app and embedded Element Picker. <b>BeautifulSoup:</b> Required for HTML parsing. <b>Selenium and Chrome or Edge:</b> Required for live scans, live tests, and Health Audit; Selenium Manager may need internet access to set up the matching driver. <b>openpyxl:</b> Required for Excel export; CSV works without it. <b>lxml:</b> Improves XPath match counts.</li>
 </ul>
 <p><i>Scores and fallback rankings are heuristics, not guarantees. Some framework snippets may need project-specific imports or syntax adjustments.</i></p>
 </body></html>
@@ -1483,9 +1757,8 @@ class MainWindow(QMainWindow):
             button.setChecked(number == index)
         self.generate_button.setVisible(index == 0)
         self.scan_button.setEnabled(not self.busy and HAS_SELENIUM)
-        self.pick_button.setEnabled(not self.busy and HAS_SELENIUM and not self.picker_open)
         if not HAS_SELENIUM and index == 1:
-            self.set_status('Selenium is required for browser picking and live scans.')
+            self.set_status('Selenium is required for live page scans. The embedded picker does not need Selenium.')
 
     def set_status(self, message):
         self.status.setText(message)
@@ -1506,8 +1779,13 @@ class MainWindow(QMainWindow):
                     if action.isChecked()]
         count = len(selected)
         label_text = f'Ignore patterns ({count})' if count else 'Ignore patterns'
-        self.exclude_button.setText(label_text + '  ▾')
-        self.excluded_summary.setText('Ignored: ' + (', '.join(selected) if selected else 'none'))
+        if hasattr(self, 'exclude_button'):
+            self.exclude_button.setText(label_text)
+        if hasattr(self, 'excluded_summary'):
+            self.excluded_summary.setText('Ignored: ' + (', '.join(selected) if selected else 'none'))
+        if hasattr(self, 'picker_exclude_button'):
+            self.picker_exclude_button.setText(label_text)
+            self.picker_excluded_summary.setText('Ignored: ' + (', '.join(selected) if selected else 'none'))
 
     def clear_exclusions(self):
         for action, _kind, _value, _title in self.exclusion_actions:
@@ -1523,6 +1801,7 @@ class MainWindow(QMainWindow):
             self.popup('HTML required', 'Paste HTML before generating locators.')
             self.html.setFocus()
             return
+        self.loaded_bundle_id = None
         excluded_types, excluded_strategies = self.get_excluded_locator_options()
         self.launch_job(
             lambda: generate_locators_job(markup, excluded_types, excluded_strategies),
@@ -1626,12 +1905,16 @@ class MainWindow(QMainWindow):
         if value not in FRAMEWORKS:
             return
         self.framework = value
-        for combo in (self.framework_combo, self.pom_framework):
-            if combo.currentText() != value:
+        for combo in (getattr(self, 'framework_combo', None), getattr(self, 'pom_framework', None), getattr(self, 'picker_framework_combo', None)):
+            if combo is not None and combo.currentText() != value:
                 was_blocked = combo.blockSignals(True)
                 combo.setCurrentText(value)
                 combo.blockSignals(was_blocked)
-        self.preview()
+        if hasattr(self, 'code_preview'):
+            self.preview()
+        if hasattr(self, 'picker_code_preview'):
+            self.update_picker_code_preview()
+            self.update_picker_locator_details()
         self.update_pom_code_preview()
 
     def copy(self, content, status):
@@ -1665,6 +1948,11 @@ class MainWindow(QMainWindow):
                 duplicates += 1
                 continue
             original = generate_descriptive_name(expr)
+            if self.loaded_bundle_id is not None:
+                bundle = next((entry for entry in self.captured_bundles
+                               if entry['id'] == self.loaded_bundle_id), None)
+                if bundle and bundle.get('variable_prefix'):
+                    original = f'{bundle["variable_prefix"]}_{original}'
             variable = original
             counter = 1
             while variable in {e['varname'] for e in self.pom_elements}:
@@ -1715,7 +2003,7 @@ class MainWindow(QMainWindow):
     def clear_pom(self):
         self.pom_elements.clear()
         put_rows(self.pom_tree, [])
-        self.pom_count.setText('No elements added. Select rows from Generate Locators.')
+        self.pom_count.setText('No elements added. Select locators from Element Picker.')
         self.update_pom_code_preview()
         self.set_status('Page Object element list cleared.')
 
@@ -1743,8 +2031,12 @@ class MainWindow(QMainWindow):
         self.switch_workspace(2)
         self.set_status(f'Sent {added} selector(s) to Health Audit.')
 
-    def export_excel(self):
-        if not self.rows:
+    def export_excel(self, candidates=None, context=None):
+        if isinstance(candidates, bool):
+            candidates = None
+        export_rows = self.rows if candidates is None else candidates
+        export_context = self.count_context if context is None else context
+        if not export_rows:
             self.set_status('Generate locators before exporting.')
             return
         dest, selected_filter = QFileDialog.getSaveFileName(
@@ -1763,8 +2055,8 @@ class MainWindow(QMainWindow):
                    'Score Value', 'Matches', f'Code Binding ({self.framework})', 'Notes', 'Match Source']
         data = [[i, c['kind'], c['strategy'], c['expr'], c['rank'], c['score'],
                  c['count'] if c['count'] is not None else 'N/A',
-                 format_framework_code(c, self.framework), c['note'], self.count_context]
-                for i, c in enumerate(self.rows, 1)]
+                 format_framework_code(c, self.framework), c['note'], export_context]
+                for i, c in enumerate(export_rows, 1)]
         try:
             if extension == '.xlsx':
                 wb = openpyxl.Workbook()
@@ -1819,25 +2111,32 @@ class MainWindow(QMainWindow):
                     writer = csv.writer(handle)
                     writer.writerow(headers)
                     writer.writerows(data)
-            self.set_status(f'Exported {len(self.rows)} locators to {dest}.')
+            self.set_status(f'Exported {len(export_rows)} locators to {dest}.')
         except Exception as exc:
             self.popup('Export failed', str(exc))
 
     def set_busy(self, active, message=None):
         self.busy = active
         self.progress.setVisible(active)
-        for btn in (self.generate_button, self.scan_button, self.audit_button, self.test_button):
-            btn.setEnabled(not active)
-        self.scan_button.setEnabled(not active and HAS_SELENIUM)
-        self.test_button.setEnabled(not active and HAS_SELENIUM)
-        self.audit_button.setEnabled(not active and HAS_SELENIUM)
-        self.pick_button.setEnabled(not active and HAS_SELENIUM and not self.picker_open)
+        for name in ('generate_button', 'scan_button', 'audit_button', 'test_button',
+                     'picker_scan_button', 'picker_test_button', 'picker_generate_button'):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not active)
+        for name in ('scan_button', 'audit_button', 'test_button', 'picker_test_button'):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not active and HAS_SELENIUM)
+        picker_scan = getattr(self, 'picker_scan_button', None)
+        if picker_scan is not None:
+            picker_scan.setEnabled(not active and (HAS_SELENIUM or self._picker_loaded))
         if message:
             self.set_status(message)
 
     def launch_job(self, task, success, label_text):
         if self.busy:
             return
+        self._job_success = success
         self.set_busy(True, label_text)
         thread = QThread(self)
         worker = Worker(task)
@@ -1845,7 +2144,7 @@ class MainWindow(QMainWindow):
         record = (thread, worker)
         self.worker_threads.append(record)
         thread.started.connect(worker.run)
-        worker.result.connect(success)
+        worker.result.connect(self.receive_job_result)
         worker.error.connect(self.job_error)
         worker.finished.connect(self.job_finished)
         worker.finished.connect(thread.quit)
@@ -1853,6 +2152,12 @@ class MainWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(lambda: self.worker_threads.remove(record) if record in self.worker_threads else None)
         thread.start()
+
+    def receive_job_result(self, payload):
+        callback = self._job_success
+        self._job_success = None
+        if callback:
+            callback(payload)
 
     def scan_whole_page(self):
         if not HAS_SELENIUM:
@@ -1872,6 +2177,7 @@ class MainWindow(QMainWindow):
                         'Scanning page source with Selenium…')
 
     def populate_scan_results(self, payload):
+        self.loaded_bundle_id = None
         self.rows = payload['rows']
         self.count_context = 'Page-source snapshot'
         self.scan_summary.setText(
@@ -1880,6 +2186,142 @@ class MainWindow(QMainWindow):
             'use Test live to verify them against the loaded page.'
         )
         self.show_candidates(f'Scanned {payload["url"]} · {len(self.rows)} top locators')
+
+    def scan_picker_whole_page(self):
+        try:
+            url = validate_http_url(self.picker_url_entry.text())
+        except ValueError as exc:
+            self.picker_status_label.setText(str(exc))
+            return
+        self.picker_url_entry.setText(url)
+        excluded_types, excluded_strategies = self.get_excluded_locator_options()
+
+        if self._picker_loaded and self.picker_view:
+            current_url = self.picker_view.url().toString()
+            if current_url and current_url != 'about:blank':
+                self.picker_status_label.setText('Reading the open page and generating locator candidates…')
+
+                def process_markup(markup):
+                    if not markup or not markup.strip():
+                        self.picker_status_label.setText(
+                            'The open page returned no HTML. Reload it or scan after the page finishes loading.'
+                        )
+                        return
+                    self.launch_job(
+                        lambda: scan_html_snapshot(markup, current_url, excluded_types, excluded_strategies),
+                        self.populate_picker_scan_results,
+                        'Scanning the currently open Element Picker page…',
+                    )
+
+                self.picker_view.page().toHtml(process_markup)
+                return
+
+        if not HAS_SELENIUM:
+            self.picker_status_label.setText(
+                'Open the page with Go to scan it in the embedded browser, or install Selenium for background scans.'
+            )
+            return
+        self.launch_job(
+            lambda: scan_page_job(url, excluded_types, excluded_strategies),
+            self.populate_picker_scan_results,
+            'Scanning the Element Picker URL…',
+        )
+
+    def generate_picker_fallback(self):
+        if BeautifulSoup is None:
+            self.popup('Dependency missing', 'Install BeautifulSoup: pip install beautifulsoup4')
+            return
+        markup = self.picker_generator_html.toPlainText().strip()
+        if not markup:
+            self.picker_generator_html.setFocus()
+            self.picker_status_label.setText('Paste HTML before generating locators.')
+            return
+        excluded_types, excluded_strategies = self.get_excluded_locator_options()
+        self.launch_job(
+            lambda: generate_locators_job(markup, excluded_types, excluded_strategies),
+            lambda payload, source=markup: self.populate_picker_input_results(payload, source),
+            'Generating picker locators from pasted HTML…',
+        )
+
+    def populate_picker_input_results(self, payload, markup):
+        capture_id = self._next_capture_id
+        self._next_capture_id += 1
+        capture_number = self._next_capture_number
+        self._next_capture_number += 1
+        bundle = {
+            'id': capture_id,
+            'number': capture_number,
+            'url': '',
+            'html': markup,
+            'rows': payload['rows'],
+            'status': f'{len(payload["rows"])} locator(s)',
+            'source': 'picker_html',
+        }
+        bundle.update(self._element_name(markup))
+        self._append_ready_picker_bundle(bundle, 'HTML input', markup)
+        self.picker_detail_tabs.setCurrentIndex(1)
+        self.picker_status_label.setText(
+            f'Generated {len(bundle["rows"])} locator(s) from pasted HTML. Results are in Candidate Locators.'
+        )
+        self.set_status(f'Generated picker locators for <{payload["tag"]}> · {len(bundle["rows"])} candidates')
+
+    def _append_ready_picker_bundle(self, bundle, source_label, tooltip=''):
+        self.captured_bundles.append(bundle)
+        capture_id = bundle['id']
+        item = QTreeWidgetItem([
+            f'#{bundle["number"]}  {bundle["display"]}', bundle['status'], source_label
+        ])
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(0, Qt.CheckState.Checked)
+        item.setData(0, Qt.ItemDataRole.UserRole, capture_id)
+        if tooltip:
+            item.setToolTip(0, tooltip)
+        for locator_index, locator in enumerate(bundle['rows']):
+            child = QTreeWidgetItem([locator['expr'], locator['kind'], locator['strategy']])
+            child.setData(0, Qt.ItemDataRole.UserRole, capture_id)
+            child.setData(0, Qt.ItemDataRole.UserRole + 1, locator_index)
+            child.setToolTip(0, locator['expr'])
+            child.setToolTip(1, f'Score: {locator["score"]}/100 · {locator["rank"]}')
+            child.setToolTip(2, locator['note'])
+            item.addChild(child)
+        self.captured_bundle_list.addTopLevelItem(item)
+        self.on_capture_bundle_check_changed(item, 0)
+        self.captured_bundle_list.setCurrentItem(item)
+        self.update_picker_candidate_view(item)
+        self.update_open_bundle_button()
+        return item
+
+    def populate_picker_scan_results(self, payload):
+        if not payload.get('rows'):
+            self.picker_status_label.setText(
+                f'Page scan found {payload.get("elements", 0)} eligible element(s), but no locators remained. '
+                'Check Ignore patterns or try a different page.'
+            )
+            self.set_status('Page scan finished with no locator candidates.')
+            return
+        capture_id = self._next_capture_id
+        self._next_capture_id += 1
+        capture_number = self._next_capture_number
+        self._next_capture_number += 1
+        host = urlparse(payload['url']).netloc or payload['url']
+        bundle = {
+            'id': capture_id,
+            'number': capture_number,
+            'url': payload['url'],
+            'html': '',
+            'rows': payload['rows'],
+            'status': f'{len(payload["rows"])} locator(s)',
+            'display': f'Page scan · {host}',
+            'variable_prefix': 'page_scan',
+            'source': 'page_scan',
+        }
+        self._append_ready_picker_bundle(bundle, 'Page scan', payload['url'])
+        self.picker_detail_tabs.setCurrentIndex(0)
+        self.picker_status_label.setText(
+            f'Page scan complete: {len(bundle["rows"])} locator(s) from '
+            f'{payload.get("elements", 0)} eligible element(s), added as a captured bundle.'
+        )
+        self.set_status(f'Scanned {payload["url"]} · {len(bundle["rows"])} locator(s)')
 
     def test_live_url(self):
         if not HAS_SELENIUM:
@@ -1927,15 +2369,20 @@ class MainWindow(QMainWindow):
         self.set_status(f'Live locator test finished: {found} found, {no_matches} with no matches, {errors} errors.')
 
     def on_job_error(self, message):
+        if self._active_capture_id is not None:
+            bundle = next((item for item in self.captured_bundles if item['id'] == self._active_capture_id), None)
+            if bundle:
+                bundle['status'] = 'Generation failed'
+                item = self._find_capture_item(bundle['id'])
+                if item:
+                    item.setText(1, 'Generation failed')
         self.popup('Operation failed', message)
         self.set_status('Operation failed: ' + message[:120])
 
     def on_job_finished(self):
         self.set_busy(False)
-
-    def on_picker_error(self, message):
-        self.popup('Picker error', message)
-        self.set_status('Picker error: ' + message[:120])
+        self._active_capture_id = None
+        self.process_next_capture()
 
     def run_health_audit_and_heal(self):
         if not HAS_SELENIUM:
@@ -1962,81 +2409,722 @@ class MainWindow(QMainWindow):
         self.set_status(f'Health Audit finished: {found}/{len(payload["results"])} locators found on live URL; '
                         f'{len(payload["suggestions"])} unverified suggestions/notes.')
 
-    def pick_element_interactive(self):
-        if not HAS_SELENIUM:
-            self.set_status('Install Selenium to open the browser picker.')
-            return
-        if self.picker_thread or self.busy:
+    def navigate_picker(self):
+        if not self.picker_view:
+            self.picker_status_label.setText('Embedded browser unavailable. Install PySide6 Qt WebEngine.')
             return
         try:
-            url = validate_http_url(self.url_entry.text())
+            url = validate_http_url(self.picker_url_entry.text())
+        except ValueError as exc:
+            self.picker_status_label.setText(str(exc))
+            return
+        self.picker_url_entry.setText(url)
+        self._picker_page_open = True
+        self.picker_scan_button.setEnabled(HAS_SELENIUM)
+        self.picker_browser_panel.show()
+        self.picker_pick_mode.setEnabled(True)
+        self.picker_close_page_button.setEnabled(True)
+        self.picker_back_button.setEnabled(True)
+        self.picker_forward_button.setEnabled(True)
+        self.picker_reload_button.setEnabled(True)
+        extent = (self.picker_splitter.height()
+                  if self.picker_splitter.orientation() == Qt.Orientation.Vertical
+                  else self.picker_splitter.width())
+        self.picker_page_stack.setCurrentWidget(self.picker_view)
+        self.picker_display_title.setText('PAGE')
+        details_visible = self.picker_detail_tabs.isVisible()
+        browser_ratio = (0.58 if details_visible else 0.66) if self.picker_splitter.orientation() == Qt.Orientation.Horizontal else (0.50 if details_visible else 0.60)
+        first = max(1, round(extent * browser_ratio))
+        self.picker_splitter.setSizes([first, max(1, extent - first)])
+        self.picker_view.setUrl(QUrl(url))
+        self.picker_status_label.setText('Loading page…')
+
+    def close_picker_page(self):
+        if not self.picker_view:
+            return
+        self.picker_poll_timer.stop()
+        if self._picker_loaded:
+            self.picker_view.page().runJavaScript('window.__pickerEnabled = false;')
+        self._picker_page_open = False
+        self._picker_loaded = False
+        self.picker_scan_button.setEnabled(HAS_SELENIUM)
+        self._picker_poll_in_flight = False
+        self.picker_pick_mode.setEnabled(False)
+        self.picker_view.stop()
+        self.picker_view.setUrl(QUrl('about:blank'))
+        self.picker_page_stack.setCurrentWidget(self.picker_fallback_page)
+        self.picker_display_title.setText('GENERATE LOCATORS')
+        self.picker_close_page_button.setEnabled(False)
+        self.picker_back_button.setEnabled(False)
+        self.picker_forward_button.setEnabled(False)
+        self.picker_reload_button.setEnabled(False)
+        extent = (self.picker_splitter.height()
+                  if self.picker_splitter.orientation() == Qt.Orientation.Vertical
+                  else self.picker_splitter.width())
+        ratio = (0.42 if self.picker_detail_tabs.isVisible() else 0.66) if self.picker_splitter.orientation() == Qt.Orientation.Horizontal else (0.48 if self.picker_detail_tabs.isVisible() else 0.60)
+        first = max(1, round(extent * ratio))
+        self.picker_splitter.setSizes([first, max(1, extent - first)])
+        self.picker_status_label.setText('Page closed. The HTML locator generator is ready, or enter a URL and click Go again.')
+
+    def on_picker_url_changed(self, url):
+        value = url.toString()
+        if value and value != 'about:blank':
+            self.picker_url_entry.setText(value)
+            # Keep legacy hidden-workspace fields in sync only if that page exists.
+            for field_name in ('live_test_url', 'scan_url'):
+                field = getattr(self, field_name, None)
+                if field is not None:
+                    field.setText(value)
+
+    def on_picker_load_finished(self, success):
+        if (not self._picker_page_open or not self.picker_view
+                or self.picker_view.url().toString() == 'about:blank'):
+            return
+        if not success:
+            self._picker_loaded = False
+            self.picker_status_label.setText('Page failed to load. Check the URL or connection and try again.')
+            self.picker_poll_timer.stop()
+            self._picker_page_open = False
+            self.picker_scan_button.setEnabled(HAS_SELENIUM)
+            self.picker_pick_mode.setEnabled(False)
+            self.picker_page_stack.setCurrentWidget(self.picker_fallback_page)
+            self.picker_display_title.setText('GENERATE LOCATORS')
+            self.picker_close_page_button.setEnabled(False)
+            self.picker_back_button.setEnabled(False)
+            self.picker_forward_button.setEnabled(False)
+            self.picker_reload_button.setEnabled(False)
+            extent = (self.picker_splitter.height()
+                      if self.picker_splitter.orientation() == Qt.Orientation.Vertical
+                      else self.picker_splitter.width())
+            ratio = (0.42 if self.picker_detail_tabs.isVisible() else 0.66) if self.picker_splitter.orientation() == Qt.Orientation.Horizontal else (0.48 if self.picker_detail_tabs.isVisible() else 0.60)
+            first = max(1, round(extent * ratio))
+            self.picker_splitter.setSizes([first, max(1, extent - first)])
+            return
+        self._picker_loaded = True
+        self.picker_scan_button.setEnabled(True)
+        self.picker_status_label.setText('Page ready. Click an element to capture it. Each click creates a separate bundle.')
+        self.install_picker_script()
+        if self.picker_pick_mode.isChecked():
+            self.picker_poll_timer.start()
+
+    def install_picker_script(self):
+        if not self.picker_view or not self._picker_loaded:
+            return
+        enabled = 'true' if self.picker_pick_mode.isChecked() else 'false'
+        self.picker_view.page().runJavaScript(PICKER_SCRIPT.replace('PICKER_ENABLED', enabled))
+
+    def update_pick_mode(self, checked):
+        if not self.picker_view or not HAS_WEBENGINE:
+            return
+        if checked and self._picker_loaded:
+            self.install_picker_script()
+            self.picker_poll_timer.start()
+        else:
+            self.picker_poll_timer.stop()
+            if self._picker_loaded:
+                self.picker_view.page().runJavaScript('window.__pickerEnabled = false;')
+        self.picker_status_label.setText('Click to capture is on.' if checked else 'Browsing mode. Turn on Click to capture to select elements.')
+
+    def poll_picker_selection(self):
+        if not self.picker_view or not self._picker_loaded or self._picker_poll_in_flight or not self.picker_pick_mode.isChecked():
+            return
+        self._picker_poll_in_flight = True
+        # Qt WebEngine evaluates JavaScript at page scope (unlike Selenium's
+        # execute_script wrapper), so return must be inside an expression scope.
+        js = '(function(){var x = window.__selectedElementHtml; window.__selectedElementHtml = null; return x;})()'
+        self.picker_view.page().runJavaScript(js, self.on_picker_selection_polled)
+
+    def on_picker_selection_polled(self, html_content):
+        self._picker_poll_in_flight = False
+        if not html_content:
+            return
+        capture_id = self._next_capture_id
+        self._next_capture_id += 1
+        capture_number = self._next_capture_number
+        self._next_capture_number += 1
+        bundle = {
+            'id': capture_id,
+            'number': capture_number,
+            'url': self.picker_view.url().toString() if self.picker_view else '',
+            'html': str(html_content),
+            'rows': [],
+            'status': 'Queued…',
+        }
+        bundle.update(self._element_name(bundle['html']))
+        self.captured_bundles.append(bundle)
+        self._pending_capture_ids.append(capture_id)
+        item = QTreeWidgetItem([f'#{capture_number}  {bundle["display"]}', 'Generating…', ''])
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(0, Qt.CheckState.Checked)
+        item.setData(0, Qt.ItemDataRole.UserRole, capture_id)
+        item.setToolTip(0, bundle['url'] + '\n\n' + bundle['html'])
+        self.captured_bundle_list.addTopLevelItem(item)
+        self.on_capture_bundle_check_changed(item, 0)
+        self.captured_bundle_list.setCurrentItem(item)
+        self.picker_status_label.setText(f'Captured element #{capture_number}; generating its independent locator bundle…')
+        self.process_next_capture()
+
+    def process_next_capture(self):
+        if self.busy or not self._pending_capture_ids:
+            return
+        capture_id = self._pending_capture_ids.pop(0)
+        bundle = next((item for item in self.captured_bundles if item['id'] == capture_id), None)
+        if bundle is None:
+            self.process_next_capture()
+            return
+        bundle['status'] = 'Generating…'
+        item = self._find_capture_item(capture_id)
+        if item:
+            item.setText(1, 'Generating…')
+        self._active_capture_id = capture_id
+        excluded_types, excluded_strategies = self.get_excluded_locator_options()
+        self.launch_job(
+            lambda markup=bundle['html'], types=tuple(excluded_types), strategies=tuple(excluded_strategies):
+                generate_locators_job(markup, types, strategies),
+            lambda payload, cid=capture_id: self.finish_capture_generation(cid, payload),
+            f'Generating locators for captured element #{bundle["number"]}…',
+        )
+
+    @staticmethod
+    def _element_name(markup):
+        soup = BeautifulSoup(markup, 'html.parser') if BeautifulSoup else None
+        element = soup.find(True) if soup else None
+        if not element:
+            return {'display': 'Captured element', 'variable_prefix': 'captured_element'}
+        identity = next((element.get(key) for key in (
+            'data-testid', 'data-test', 'data-qa', 'aria-label', 'name', 'id',
+            'placeholder', 'title') if element.get(key)), '')
+        if not identity:
+            identity = ' '.join(element.stripped_strings)
+        identity = re.sub(r'\s+', ' ', str(identity)).strip()[:48]
+        display = f'<{element.name}>' + (f' · {identity}' if identity else ' · clicked element')
+        variable = re.sub(r'[^A-Za-z0-9]+', '_', f'{element.name}_{identity}').strip('_').lower()
+        if not variable:
+            variable = 'captured_element'
+        if variable[0].isdigit():
+            variable = 'element_' + variable
+        return {'display': display, 'variable_prefix': variable}
+
+    @classmethod
+    def _element_description(cls, markup):
+        return cls._element_name(markup)['display']
+
+    def _find_capture_item(self, capture_id):
+        for index in range(self.captured_bundle_list.topLevelItemCount()):
+            item = self.captured_bundle_list.topLevelItem(index)
+            if item.data(0, Qt.ItemDataRole.UserRole) == capture_id:
+                return item
+        return None
+
+    def finish_capture_generation(self, capture_id, payload):
+        bundle = next((item for item in self.captured_bundles if item['id'] == capture_id), None)
+        if bundle is None:
+            return
+        bundle['rows'] = payload['rows']
+        bundle['status'] = f'{len(payload["rows"])} locator(s)'
+        item = self._find_capture_item(capture_id)
+        if item:
+            item.setText(0, f'#{bundle["number"]}  {bundle["display"]}')
+            item.setText(1, bundle['status'])
+            item.takeChildren()
+            for locator_index, locator in enumerate(bundle['rows']):
+                child = QTreeWidgetItem([
+                    locator['expr'], locator['kind'], locator['strategy']
+                ])
+                child.setData(0, Qt.ItemDataRole.UserRole, capture_id)
+                child.setData(0, Qt.ItemDataRole.UserRole + 1, locator_index)
+                child.setToolTip(0, locator['expr'])
+                child.setToolTip(1, f'Score: {locator["score"]}/100 · {locator["rank"]}')
+                child.setToolTip(2, locator['note'])
+                item.addChild(child)
+            item.setExpanded(False)
+        self.update_picker_candidate_view(item)
+        self.load_capture_bundle(bundle, switch_workspace=False)
+        self.update_open_bundle_button()
+        self.set_status(f'Captured {bundle["display"]}: generated {len(bundle["rows"])} locator(s) in bundle #{bundle["number"]}.')
+        if self.captured_bundle_list.currentItem() is item:
+            self.picker_status_label.setText(f'{bundle["display"]} ready: {len(bundle["rows"])} locator(s). Its candidates are available in Element Picker; the next click creates a separate bundle.')
+
+    def update_picker_candidate_view(self, current=None, _previous=None):
+        bundles = self.checked_capture_bundles()
+        rows = [(bundle, locator_index, locator)
+                for bundle in bundles
+                for locator_index, locator in enumerate(bundle['rows'])]
+        self.picker_candidate_sources = []
+        self.picker_candidate_tree.blockSignals(True)
+        try:
+            self.picker_candidate_tree.setRowCount(0)
+            for bundle, locator_index, candidate in rows:
+                row = self.picker_candidate_tree.rowCount()
+                self.picker_candidate_tree.insertRow(row)
+                self.picker_candidate_sources.append((bundle['id'], locator_index))
+                check = QTableWidgetItem('')
+                check.setFlags(check.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                single_mode = self.picker_selection_mode.currentText() == 'Single selection'
+                check.setCheckState(
+                    Qt.CheckState.Checked if (not single_mode or row == 0)
+                    else Qt.CheckState.Unchecked
+                )
+                self.picker_candidate_tree.setItem(row, 0, check)
+                values = (candidate['expr'], candidate['kind'], candidate['strategy'],
+                          f'{candidate["rank"]} · {candidate["score"]}/100',
+                          str(candidate['count']) if candidate.get('count') is not None else 'N/A',
+                          f'#{bundle["number"]} {bundle["display"]}')
+                for column, value in enumerate(values, 1):
+                    cell = QTableWidgetItem(str(value))
+                    if column in (1, 6):
+                        cell.setToolTip(str(value))
+                    self.picker_candidate_tree.setItem(row, column, cell)
+        finally:
+            self.picker_candidate_tree.blockSignals(False)
+        if bundles:
+            self.picker_candidates_caption.setText(
+                f'{len(bundles)} captured bundle(s) selected · {len(rows)} candidate locator(s)'
+            )
+        else:
+            self.picker_candidates_caption.setText(
+                'Select one or more captured bundles to show their candidates and code preview.'
+            )
+        self.picker_select_all.blockSignals(True)
+        self.picker_select_all.setChecked(
+            bool(rows) and self.picker_selection_mode.currentText() == 'Multiple selection'
+        )
+        self.picker_select_all.blockSignals(False)
+        self.update_picker_code_preview()
+        selected_item = current or self.captured_bundle_list.currentItem()
+        selected_parent = selected_item.parent() if selected_item and selected_item.parent() else selected_item
+        preferred_source = None
+        if selected_parent:
+            selected_id = selected_parent.data(0, Qt.ItemDataRole.UserRole)
+            if selected_item.parent():
+                preferred_source = (selected_id, selected_item.data(0, Qt.ItemDataRole.UserRole + 1))
+            else:
+                preferred_source = next((source for source in self.picker_candidate_sources
+                                         if source[0] == selected_id), None)
+        row_to_select = next((index for index, source in enumerate(self.picker_candidate_sources)
+                              if source == preferred_source), None)
+        if row_to_select is None and self.picker_candidate_sources:
+            row_to_select = 0
+        if row_to_select is not None:
+            self.picker_candidate_tree.selectRow(row_to_select)
+        else:
+            self.picker_locator_details.setPlainText(
+                'Select one or more captured bundles to inspect locator details.'
+            )
+
+    def update_picker_locator_details(self):
+        entries = self.selected_picker_candidate_entries()
+        if not entries:
+            self.picker_locator_details.setPlainText(
+                'Check one or more candidate locators to inspect their details.'
+            )
+            return
+        sections = []
+        for number, (candidate, bundle, locator_index) in enumerate(entries, 1):
+            matches = candidate['count'] if candidate.get('count') is not None else 'N/A'
+            live = self._picker_live_results.get((bundle['id'], locator_index))
+            if live is None:
+                live_text = 'Live test: Not tested yet.'
+            elif live.get('error'):
+                live_text = f'Live test: Evaluation error — {live["error"]}'
+            elif live.get('matches', 0) > 0:
+                live_text = f'Live test: Found {live["matches"]} match(es) at {live["url"]}.'
+            else:
+                live_text = f'Live test: No matches at {live["url"]}.'
+            sections.append(
+                f'[{number}] Captured element: #{bundle["number"]} {bundle["display"]}\n'
+                f'Locator: {candidate["expr"]}\n'
+                f'Type: {candidate["kind"]}   Strategy: {candidate["strategy"]}\n'
+                f'Score: {candidate["score"]}/100 ({candidate["rank"]})\n'
+                f'Snapshot matches: {matches}\n'
+                f'{live_text}\n\n'
+                f'{candidate["note"]}\n\n'
+                f'Framework binding ({self.framework}):\n'
+                f'{format_framework_code(candidate, self.framework)}'
+            )
+        self.picker_locator_details.setPlainText('\n\n' + ('\n\n' + '—' * 48 + '\n\n').join(sections))
+
+    def selected_picker_candidates(self):
+        return [candidate for candidate, _bundle, _locator_index in self.selected_picker_candidate_entries()]
+
+    def selected_picker_candidate_entries(self):
+        entries = []
+        for row in range(self.picker_candidate_tree.rowCount()):
+            check = self.picker_candidate_tree.item(row, 0)
+            if check and check.checkState() == Qt.CheckState.Checked:
+                if row >= len(self.picker_candidate_sources):
+                    continue
+                capture_id, locator_index = self.picker_candidate_sources[row]
+                bundle = next((entry for entry in self.captured_bundles
+                               if entry['id'] == capture_id), None)
+                if bundle and 0 <= locator_index < len(bundle['rows']):
+                    entries.append((bundle['rows'][locator_index], bundle, locator_index))
+        return entries
+
+    def add_picker_candidates_to_pom(self):
+        entries = self.selected_picker_candidate_entries()
+        if not entries:
+            self.set_status('Select one or more picker locator rows to add to Page Objects.')
+            return
+        added = duplicates = 0
+        for candidate, bundle, _locator_index in entries:
+            expr = candidate['expr']
+            if any(element['expr'] == expr for element in self.pom_elements):
+                duplicates += 1
+                continue
+            name = generate_descriptive_name(expr)
+            prefix = bundle.get('variable_prefix', '')
+            base = f'{prefix}_{name}' if prefix else name
+            variable = base
+            suffix = 1
+            existing = {element['varname'] for element in self.pom_elements}
+            while variable in existing:
+                variable = f'{base}{suffix}'
+                suffix += 1
+            self.pom_elements.append({'varname': variable, 'kind': candidate['kind'], 'expr': expr})
+            added += 1
+        put_rows(self.pom_tree, [(element['varname'], element['kind'], element['expr'])
+                                 for element in self.pom_elements])
+        self.pom_count.setText(f'{len(self.pom_elements)} elements in Page Objects')
+        self.update_pom_code_preview()
+        self.set_status(f'Added {added} picker locator(s) to Page Objects; skipped {duplicates} duplicate(s).')
+
+    def send_picker_candidates_to_audit(self):
+        candidates = self.selected_picker_candidates()
+        if not candidates:
+            self.set_status('Select one or more picker locator rows to send to Health Audit.')
+            return
+        existing = self.audit_input_text.toPlainText().splitlines()
+        seen = {line.strip() for line in existing if line.strip()}
+        added = 0
+        for candidate in candidates:
+            expression = candidate['expr']
+            if expression not in seen:
+                existing.append(expression)
+                seen.add(expression)
+                added += 1
+        self.audit_input_text.setPlainText('\n'.join(existing).strip())
+        self.switch_workspace(2)
+        self.set_status(f'Sent {added} picker locator(s) to Health Audit.')
+
+    def test_picker_candidates_live(self):
+        if not HAS_SELENIUM:
+            self.set_status('Install Selenium to test selectors.')
+            return
+        entries = self.selected_picker_candidate_entries()
+        if not entries:
+            self.popup('Select locators', 'Check one or more locator rows before running a live test.')
+            return
+        try:
+            url = validate_http_url(self.picker_url_entry.text())
         except ValueError as exc:
             self.set_status(str(exc))
             return
-        self.picker_commands = queue.Queue()
-        self.picker_thread = QThread(self)
-        self.picker_worker = PickerWorker(url, self.picker_commands, self.pick_mode.isChecked())
-        self.picker_worker.moveToThread(self.picker_thread)
-        self.picker_thread.started.connect(self.picker_worker.run)
-        self.picker_worker.opened.connect(self.on_picker_open)
-        self.picker_worker.picked.connect(self.on_element_picked)
-        self.picker_worker.navigated.connect(self.on_picker_navigated)
-        self.picker_worker.error.connect(self.picker_error)
-        self.picker_worker.finished.connect(self.on_picker_closed)
-        self.picker_worker.finished.connect(self.picker_thread.quit)
-        self.picker_worker.finished.connect(self.picker_worker.deleteLater)
-        self.picker_thread.finished.connect(self.picker_thread.deleteLater)
-        self.picker_thread.finished.connect(self.reset_picker_refs)
-        self.pick_button.setEnabled(False)
-        self.set_status('Opening browser picker…')
-        self.picker_thread.start()
+        if not url:
+            self.set_status('Enter a URL in the Element Picker address bar.')
+            return
+        selected = [candidate.copy() for candidate, _bundle, _index in entries]
+        self.launch_job(
+            lambda: test_live_job(url, selected),
+            lambda payload, entries=entries: self.show_picker_live_test_results(payload, entries),
+            f'Testing {len(selected)} picker locator(s) against live URL…',
+        )
 
-    def on_picker_open(self, browser_name='Google Chrome'):
-        self.picker_open = True
-        self.close_picker_button.setEnabled(True)
-        self.pick_mode.setEnabled(True)
-        for button in (self.nav_back, self.nav_forward, self.nav_refresh):
-            button.setEnabled(True)
-        self.set_status(f'{browser_name} picker ready. Click a page element to capture it.')
+    def show_picker_live_test_results(self, payload, entries):
+        for (candidate, bundle, locator_index), result in zip(entries, payload.get('results', [])):
+            _expression, matches, error = result
+            self._picker_live_results[(bundle['id'], locator_index)] = {
+                'matches': matches, 'error': error, 'url': payload.get('url', '')
+            }
+        self.update_picker_locator_details()
+        self.show_live_test_results(payload)
 
-    def on_picker_navigated(self, url):
-        self.url_entry.setText(url)
-        self.scan_url.setText(url)
-        self.live_test_url.setText(url)
+    def export_picker_candidates(self):
+        candidates = self.selected_picker_candidates()
+        if not candidates:
+            self.set_status('Select one or more picker locator rows to export.')
+            return
+        selected_bundles = self.checked_capture_bundles()
+        source = ', '.join(f'#{bundle["number"]} {bundle["display"]}' for bundle in selected_bundles)
+        self.export_excel(candidates, f'Element Picker candidates · {source or "page scan"}')
 
-    def update_pick_mode(self, checked):
-        self.picker_command('enable', checked)
+    def on_picker_candidate_changed(self, item):
+        if item.column() != 0:
+            return
+        if (self.picker_selection_mode.currentText() == 'Single selection'
+                and item.checkState() == Qt.CheckState.Checked):
+            self.picker_candidate_tree.blockSignals(True)
+            try:
+                for row in range(self.picker_candidate_tree.rowCount()):
+                    other = self.picker_candidate_tree.item(row, 0)
+                    if other is not None and other is not item:
+                        other.setCheckState(Qt.CheckState.Unchecked)
+            finally:
+                self.picker_candidate_tree.blockSignals(False)
+        all_checked = (self.picker_selection_mode.currentText() == 'Multiple selection'
+                       and bool(self.picker_candidate_tree.rowCount()) and all(
+            self.picker_candidate_tree.item(row, 0).checkState() == Qt.CheckState.Checked
+            for row in range(self.picker_candidate_tree.rowCount())
+        ))
+        self.picker_select_all.blockSignals(True)
+        self.picker_select_all.setChecked(all_checked)
+        self.picker_select_all.blockSignals(False)
+        self.update_picker_code_preview()
+        self.update_picker_locator_details()
 
-    def picker_command(self, command, value=None):
-        if self.picker_commands:
-            self.picker_commands.put((command, value))
+    def set_picker_selection_mode(self, mode):
+        single = mode == 'Single selection'
+        self.picker_select_all.setEnabled(not single)
+        if single:
+            self.picker_candidate_tree.blockSignals(True)
+            try:
+                kept_one = False
+                for row in range(self.picker_candidate_tree.rowCount()):
+                    item = self.picker_candidate_tree.item(row, 0)
+                    if item is None or item.checkState() != Qt.CheckState.Checked:
+                        continue
+                    if kept_one:
+                        item.setCheckState(Qt.CheckState.Unchecked)
+                    else:
+                        kept_one = True
+            finally:
+                self.picker_candidate_tree.blockSignals(False)
+        self.picker_select_all.blockSignals(True)
+        self.picker_select_all.setChecked(
+            not single and bool(self.picker_candidate_tree.rowCount()) and all(
+                self.picker_candidate_tree.item(row, 0).checkState() == Qt.CheckState.Checked
+                for row in range(self.picker_candidate_tree.rowCount())
+            )
+        )
+        self.picker_select_all.blockSignals(False)
+        self.update_picker_code_preview()
+        self.update_picker_locator_details()
 
-    def close_picker_browser(self):
-        self.picker_command('close')
-        self.set_status('Closing browser picker…')
-        self.close_picker_button.setEnabled(False)
+    def set_all_picker_candidates(self, checked):
+        single = self.picker_selection_mode.currentText() == 'Single selection'
+        self.picker_candidate_tree.blockSignals(True)
+        try:
+            for row in range(self.picker_candidate_tree.rowCount()):
+                item = self.picker_candidate_tree.item(row, 0)
+                if item:
+                    selected = checked and (not single or row == 0)
+                    item.setCheckState(Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
+        finally:
+            self.picker_candidate_tree.blockSignals(False)
+        self.update_picker_code_preview()
+        self.update_picker_locator_details()
 
-    def on_picker_closed(self):
-        self.picker_open = False
-        self.close_picker_button.setEnabled(False)
-        self.pick_mode.setEnabled(False)
-        for button in (self.nav_back, self.nav_forward, self.nav_refresh):
-            button.setEnabled(False)
-        self.set_status('Browser picker closed.')
+    def update_picker_code_preview(self, *_):
+        if not hasattr(self, 'picker_code_preview'):
+            return
+        candidates = self.selected_picker_candidates()
+        code = '\n'.join(format_framework_code(candidate, self.framework) for candidate in candidates)
+        self.picker_code_preview.setPlainText(code or 'Select one or more candidate locators to preview framework code.')
 
-    def reset_picker_refs(self):
-        self.picker_thread = None
-        self.picker_worker = None
-        self.picker_commands = None
-        self.pick_button.setEnabled(HAS_SELENIUM and not self.busy)
+    def copy_picker_candidate_selectors(self):
+        candidates = self.selected_picker_candidates()
+        if candidates:
+            self.copy('\n'.join(candidate['expr'] for candidate in candidates),
+                      f'Copied {len(candidates)} picker locator(s).')
+        else:
+            self.set_status('Select one or more picker locator rows to copy.')
 
-    def on_element_picked(self, html_content):
-        self.html.setPlainText(str(html_content))
-        self.switch_workspace(0)
-        self.switch_mode(0)
-        self.generate()
-        self.set_status(f'Browser element captured; {len(self.rows)} locator candidates generated.')
+    def copy_picker_candidate_code(self):
+        candidates = self.selected_picker_candidates()
+        if candidates:
+            self.copy('\n'.join(format_framework_code(candidate, self.framework) for candidate in candidates),
+                      f'Copied {len(candidates)} {self.framework} picker binding(s).')
+        else:
+            self.set_status('Select one or more picker locator rows to copy code.')
 
+    def _top_level_capture_items(self):
+        return [self.captured_bundle_list.topLevelItem(index)
+                for index in range(self.captured_bundle_list.topLevelItemCount())]
+
+    def checked_capture_bundles(self):
+        checked_ids = {
+            item.data(0, Qt.ItemDataRole.UserRole)
+            for item in self._top_level_capture_items()
+            if item.checkState(0) == Qt.CheckState.Checked
+        }
+        return [bundle for bundle in self.captured_bundles if bundle['id'] in checked_ids]
+
+    def on_capture_bundle_check_changed(self, item, column):
+        if column != 0 or item.parent():
+            return
+        if (self.capture_selection_mode.currentText() == 'Single selection'
+                and item.checkState(0) == Qt.CheckState.Checked):
+            self.captured_bundle_list.blockSignals(True)
+            try:
+                for other in self._top_level_capture_items():
+                    if other is not item:
+                        other.setCheckState(0, Qt.CheckState.Unchecked)
+            finally:
+                self.captured_bundle_list.blockSignals(False)
+        all_checked = (
+            self.capture_selection_mode.currentText() == 'Multiple selection'
+            and bool(self._top_level_capture_items())
+            and all(item.checkState(0) == Qt.CheckState.Checked
+                    for item in self._top_level_capture_items())
+        )
+        self.select_all_captures.blockSignals(True)
+        self.select_all_captures.setChecked(all_checked)
+        self.select_all_captures.blockSignals(False)
+        self.update_open_bundle_button()
+        self.update_picker_candidate_view()
+
+    def set_capture_selection_mode(self, mode):
+        single = mode == 'Single selection'
+        self.select_all_captures.setEnabled(not single)
+        if single:
+            self.captured_bundle_list.blockSignals(True)
+            try:
+                items = self._top_level_capture_items()
+                current = self.captured_bundle_list.currentItem()
+                current = current.parent() if current and current.parent() else current
+                keep = current if current and current.checkState(0) == Qt.CheckState.Checked else next(
+                    (item for item in items if item.checkState(0) == Qt.CheckState.Checked), None
+                )
+                for item in items:
+                    if item.checkState(0) != Qt.CheckState.Checked:
+                        continue
+                    if item is not keep:
+                        item.setCheckState(0, Qt.CheckState.Unchecked)
+            finally:
+                self.captured_bundle_list.blockSignals(False)
+        all_checked = (not single and bool(self._top_level_capture_items())
+                       and all(item.checkState(0) == Qt.CheckState.Checked
+                               for item in self._top_level_capture_items()))
+        self.select_all_captures.blockSignals(True)
+        self.select_all_captures.setChecked(all_checked)
+        self.select_all_captures.blockSignals(False)
+        self.update_picker_candidate_view()
+
+    def set_all_captures_checked(self, checked):
+        single = self.capture_selection_mode.currentText() == 'Single selection'
+        self.captured_bundle_list.blockSignals(True)
+        try:
+            for index, item in enumerate(self._top_level_capture_items()):
+                selected = checked and (not single or index == 0)
+                item.setCheckState(0, Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
+        finally:
+            self.captured_bundle_list.blockSignals(False)
+        self.update_open_bundle_button()
+        self.update_picker_candidate_view()
+
+    def update_open_bundle_button(self, *_):
+        selected = self.captured_bundle_list.currentItem() if hasattr(self, 'captured_bundle_list') else None
+        parent = selected.parent() if selected and selected.parent() else selected
+        capture_id = parent.data(0, Qt.ItemDataRole.UserRole) if parent else None
+        bundle = next((item for item in self.captured_bundles if item['id'] == capture_id), None)
+        ready = bool(bundle and bundle['status'] not in ('Generating…', 'Queued…', 'Generation failed'))
+        self.open_capture_button.setEnabled(ready)
+        selected_bundles = self.checked_capture_bundles()
+        if not selected_bundles and bundle:
+            selected_bundles = [bundle]
+        can_copy = any(item['rows'] and item['status'] not in
+                       ('Generating…', 'Queued…', 'Generation failed')
+                       for item in selected_bundles)
+        self.copy_capture_bundle_button.setEnabled(can_copy)
+        self.copy_capture_code_button.setEnabled(can_copy)
+        self.copy_capture_locator_button.setEnabled(
+            ready and bool(selected and selected.parent())
+        )
+
+    def _selected_capture_bundle(self):
+        selected = self.captured_bundle_list.currentItem()
+        parent = selected.parent() if selected and selected.parent() else selected
+        if not parent:
+            return None, None
+        capture_id = parent.data(0, Qt.ItemDataRole.UserRole)
+        bundle = next((entry for entry in self.captured_bundles if entry['id'] == capture_id), None)
+        return bundle, selected
+
+    def on_capture_tree_double_clicked(self, item, _column):
+        if item.parent():
+            self.copy_selected_capture_locator()
+        else:
+            self.open_selected_capture()
+
+    def on_capture_tree_clicked(self, item, _column):
+        if item.parent():
+            parent = item.parent()
+            if parent.checkState(0) != Qt.CheckState.Checked:
+                parent.setCheckState(0, Qt.CheckState.Checked)
+            self.update_picker_candidate_view(item)
+            return
+        row_rect = self.captured_bundle_list.visualItemRect(item)
+        click_x = self.captured_bundle_list.viewport().mapFromGlobal(QCursor.pos()).x()
+        label_start = row_rect.left() + self.captured_bundle_list.indentation() + 42
+        if click_x >= label_start and item.checkState(0) != Qt.CheckState.Checked:
+            item.setCheckState(0, Qt.CheckState.Checked)
+        # Clicking the row label behaves like a disclosure control; native
+        # clicks on the tree arrow remain responsible for collapsing it.
+        if click_x >= row_rect.left() + self.captured_bundle_list.indentation() + 28:
+            item.setExpanded(not item.isExpanded())
+
+    def copy_selected_capture_locator(self):
+        bundle, selected = self._selected_capture_bundle()
+        if not bundle or not selected or not selected.parent():
+            return
+        index = selected.data(0, Qt.ItemDataRole.UserRole + 1)
+        if isinstance(index, int) and 0 <= index < len(bundle['rows']):
+            locator = bundle['rows'][index]
+            self.copy(locator['expr'], f'Copied locator from {bundle["display"]}.')
+
+    def copy_capture_bundle_selectors(self):
+        bundles = self.checked_capture_bundles()
+        if not bundles:
+            current, _selected = self._selected_capture_bundle()
+            bundles = [current] if current else []
+        locators = [locator for bundle in bundles for locator in bundle['rows']]
+        if locators:
+            self.copy('\n'.join(locator['expr'] for locator in locators),
+                      f'Copied {len(locators)} selectors from {len(bundles)} captured element bundle(s).')
+
+    def copy_capture_bundle_code(self):
+        bundles = self.checked_capture_bundles()
+        if not bundles:
+            current, _selected = self._selected_capture_bundle()
+            bundles = [current] if current else []
+        locators = [locator for bundle in bundles for locator in bundle['rows']]
+        if locators:
+            code = '\n'.join(format_framework_code(locator, self.framework) for locator in locators)
+            self.copy(code, f'Copied {len(locators)} {self.framework} bindings from {len(bundles)} captured element bundle(s).')
+
+    def open_selected_capture(self, *_):
+        bundle, _selected = self._selected_capture_bundle()
+        if not bundle or bundle['status'] in ('Generating…', 'Queued…', 'Generation failed'):
+            return
+        self.load_capture_bundle(bundle, switch_workspace=True)
+
+    def load_capture_bundle(self, bundle, switch_workspace):
+        capture_id = bundle['id']
+        self.loaded_bundle_id = capture_id
+        if bundle.get('source') == 'page_scan':
+            self.count_context = f'Page scan snapshot: {bundle["url"]}'
+        else:
+            self.count_context = f'Captured bundle #{bundle["number"]}: {bundle["display"]}'
+        if switch_workspace:
+            self.switch_workspace(0)
+            self.picker_detail_tabs.setCurrentIndex(0)
+        self.update_picker_candidate_view()
+        self.set_status(f'Bundle #{bundle["number"]} · {bundle["display"]} · {len(bundle["rows"])} locators')
+
+    def clear_captured_bundles(self):
+        self.captured_bundles.clear()
+        self._picker_live_results.clear()
+        self._pending_capture_ids.clear()
+        self.loaded_bundle_id = None
+        self._active_capture_id = None
+        self._next_capture_number = 1
+        self.captured_bundle_list.clear()
+        self.select_all_captures.blockSignals(True)
+        self.select_all_captures.setChecked(False)
+        self.select_all_captures.blockSignals(False)
+        self.update_picker_candidate_view()
+        self.update_open_bundle_button()
+        self.picker_status_label.setText('Captured bundles cleared and numbering restarted. Click a page element to capture a new bundle.')
     def toggle_theme(self):
         self.dark = not self.dark
         self.apply_theme()
@@ -2061,8 +3149,6 @@ class MainWindow(QMainWindow):
         self.sidebar.setFixedWidth(px(194))
         for button in self.nav_buttons:
             button.setMinimumHeight(px(40))
-        for button in getattr(self, 'mode_buttons', []):
-            button.setMinimumHeight(px(38))
         if hasattr(self, 'generate_button'):
             self.generate_button.setMinimumHeight(px(39))
         self.setStyleSheet(f'''
@@ -2100,6 +3186,12 @@ class MainWindow(QMainWindow):
                                         selection-color: white; }}
             QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus, QTableWidget:focus {{ border: 2px solid #60a5fa; }}
             QTableWidget {{ alternate-background-color: {table_alt}; gridline-color: {border}; }}
+            QTabWidget::pane {{ background: {surface}; border: 1px solid {border}; border-radius: 7px; top: -1px; }}
+            QTabBar::tab {{ background: {sidebar}; color: {muted}; border: 1px solid {border};
+                            padding: {px(8)}px {px(13)}px; margin-right: {px(3)}px; border-top-left-radius: 5px;
+                            border-top-right-radius: 5px; }}
+            QTabBar::tab:selected {{ background: {surface}; color: {fg}; border-bottom-color: {surface}; font-weight: 600; }}
+            QTabBar::tab:hover:!selected {{ background: {hover}; color: {fg}; }}
             QHeaderView::section {{ background: {sidebar}; color: {fg}; border: none;
                                    border-bottom: 1px solid {border}; padding: {px(9)}px {px(6)}px; font-weight: 600; }}
             QTableWidget::item:selected {{ background: #2563eb; color: white; }}
@@ -2111,9 +3203,13 @@ class MainWindow(QMainWindow):
                 outline: none; selection-background-color: #2563eb; selection-color: white; }}
             QComboBox QAbstractItemView::item {{ min-height: {px(28)}px; padding: {px(5)}px {px(10)}px; border-radius: 4px; }}
             QComboBox QAbstractItemView::item:hover {{ background: {hover}; }}
-            QToolButton#excludeButton {{ background: {surface}; color: {fg}; border: 1px solid {border};
-                                         border-radius: 6px; padding: {px(7)}px {px(10)}px; }}
+            QToolButton#excludeButton {{ background: {field}; color: {fg}; border: 1px solid {border};
+                                         border-radius: 6px; padding: {px(5)}px {px(30)}px {px(5)}px {px(10)}px; }}
+            QToolButton#excludeButton::menu-indicator {{ image: none; width: 0px; }}
             QToolButton#excludeButton:hover {{ background: {hover}; border-color: #3b82f6; }}
+            QToolButton#drawerButton {{ background: {surface}; color: {fg}; border: 1px solid {border};
+                                        border-radius: 6px; padding: {px(6)}px; min-width: {px(30)}px; }}
+            QToolButton#drawerButton:hover {{ background: {hover}; border-color: #3b82f6; }}
             QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; padding: {px(5)}px; }}
             QMenu::item {{ padding: {px(6)}px {px(26)}px {px(6)}px {px(8)}px; border-radius: 4px; }}
             QMenu::item:selected {{ background: {hover}; }}
@@ -2137,16 +3233,8 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event):
-        if self.picker_commands:
-            self.picker_commands.put(('close', None))
-        if self.picker_thread and self.picker_thread.isRunning():
-            # Avoid destroying a live QThread. Continue after browser shutdown.
-            self.set_status('Close the browser picker before exiting the app.')
-            if not self._close_when_idle:
-                self._close_when_idle = True
-                self.picker_thread.finished.connect(self._retry_close_when_idle)
-            event.ignore()
-            return
+        if self.picker_poll_timer:
+            self.picker_poll_timer.stop()
         if any(thread.isRunning() for thread, _ in self.worker_threads):
             self.set_status('A browser operation is running. Close after it finishes.')
             if not self._close_when_idle:
@@ -2172,3 +3260,4 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
